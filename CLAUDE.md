@@ -16,7 +16,13 @@ Both are cloned next to this repo and are the reference material for all work he
 
 Current state: only a spike exists (`wave_overhang_spike_plugin.py`). It is not a wave
 implementation; it proves the hand-over between slice-time hooks and G-code post-processing.
-It has been checked against a fake host only, never run inside OrcaSlicer.
+It was first checked against a fake host, then run once inside OrcaSlicer (non-Bambu printer,
+standard-tag G-code, one object): the hand-over survived (module global and capability
+instance both), 163 layers were captured (1 with overhangs), the object->plate offset was
+measured (X 157.119, Y 162.847 mm; all 163 layers matched by Z, worst deviation 0.001 mm) and
+1 marker loop was injected at z=32.4. The instance offset reported by the host differs from
+the measured one, as expected. Not yet checked: the loop's position in a G-code viewer and the
+nozzle's retraction state around the injected block.
 
 ## Commands
 
@@ -88,7 +94,7 @@ Facts that shaped the approach:
   opened to drop thin slivers; outlines stored as mm tuples keyed by `print_z` (rounded to 3
   decimals), plus a reference bounding box of the layer's walls.
 - **Hand-over**: stored both in the module-level `_STATE` and on the capability instance, so the
-  report can say which survives. Whether either survives in a real run is still unverified.
+  report can say which survives. In a real run both survived (verified).
 - **Inject** (`psGCodePostProcess`): scan the G-code per layer, measure the object-to-plate
   offset by matching wall bounding boxes, refuse to inject if the offset is inconsistent, then
   insert one "Custom" marker loop per overhang area before the next layer-change tag. The block
