@@ -250,7 +250,12 @@ def _scan_gcode(lines, e_relative):
 
     Each layer: {"z", "marker" (line index of its layer-change tag), "box" (wall
     extrusion bbox or None), "end" (line index where the layer ends, or None for the
-    last layer), "end_state" (feature/width/height tag lines, F, E, E mode at "end")}.
+    last layer), "end_state" (feature/width/height tag lines, F, E, E mode and
+    retraction state at "end")}.
+
+    Retraction state: "retracted" is the filament length (mm) pulled back by G1 E
+    moves (wipes included) and not yet pushed back; "fw_retracted" is True between
+    a firmware G10 and G11.
     """
     layers = []
     cur = None
@@ -259,6 +264,8 @@ def _scan_gcode(lines, e_relative):
     x = y = None
     last_e = 0.0
     last_f = None
+    retracted = 0.0
+    fw_retracted = False
     feature = None
     feature_line = width_line = height_line = None
 
@@ -266,6 +273,7 @@ def _scan_gcode(lines, e_relative):
         return {
             "feature_line": feature_line, "width_line": width_line, "height_line": height_line,
             "f": last_f, "e": last_e, "e_relative": e_relative,
+            "retracted": retracted, "fw_retracted": fw_retracted,
         }
 
     for i, raw in enumerate(lines):
@@ -306,6 +314,10 @@ def _scan_gcode(lines, e_relative):
         elif cmd == "G92":
             if "E" in w:
                 last_e = w["E"]
+        elif cmd == "G10":
+            fw_retracted = True
+        elif cmd == "G11":
+            fw_retracted = False
         elif cmd in ("G0", "G1", "G2", "G3"):
             if "F" in w:
                 last_f = w["F"]
@@ -313,9 +325,15 @@ def _scan_gcode(lines, e_relative):
             ny = w.get("Y", y)
             extruding = False
             if "E" in w:
-                extruding = (w["E"] > 0.0) if e_relative else (w["E"] > last_e)
+                de = w["E"] if e_relative else w["E"] - last_e
                 if not e_relative:
                     last_e = w["E"]
+                if de < 0.0:
+                    retracted -= de
+                elif de > 0.0:
+                    # Push back what was retracted first; only the rest is extrusion.
+                    extruding = de > retracted + 1e-6
+                    retracted = max(0.0, retracted - de)
             moved = ("X" in w) or ("Y" in w)
             if (extruding and moved and cur is not None and feature in _WALL_ROLES
                     and x is not None and y is not None and nx is not None and ny is not None):
@@ -373,7 +391,13 @@ def _fmt(v):
 
 
 def _marker_block(layer_cap, state, cal, bbl, cfg):
-    """G-code lines drawing every marker loop of one layer, leaving the stream state as found."""
+    """G-code lines drawing every marker loop of one layer, leaving the stream state as found.
+
+    Retraction is balanced against the state the layer ended in: if the nozzle is
+    already retracted (G1 E or firmware G10) the block does not retract again before
+    its first travel, and it restores that retraction at the end, so the slicer's own
+    un-retract that follows still pushes back exactly what it pulled.
+    """
     w = cfg["line_width"]
     h = layer_cap["height"]
     # Rounded-rectangle cross-section of a normal line, scaled by the marker flow ratio.
@@ -390,13 +414,36 @@ def _marker_block(layer_cap, state, cal, bbl, cfg):
         out += [";TYPE:Custom\n", ";WIDTH:" + _fmt(w) + "\n", ";HEIGHT:" + _fmt(h) + "\n"]
     if not state["e_relative"]:
         out.append("M83\n")
-    for loop in layer_cap["loops"]:
+
+    def pull(kind, amount):
+        if kind == "fw":
+            return ["G10\n"]
+        return ["G1 E-" + ("%.5f" % amount) + " F1800\n"] if amount > 0.0 else []
+
+    def push(kind, amount):
+        if kind == "fw":
+            return ["G11\n"]
+        return ["G1 E" + ("%.5f" % amount) + " F1800\n"] if amount > 0.0 else []
+
+    # How the nozzle is retracted when the block starts: the block keeps using the
+    # same mechanism, and re-applies it at the end.
+    if state.get("fw_retracted"):
+        entry_kind, entry_amount = "fw", 0.0
+    elif state.get("retracted", 0.0) > 1e-4:
+        entry_kind, entry_amount = "g1", state["retracted"]
+    else:
+        entry_kind, entry_amount = None, 0.0
+    kind = entry_kind or "g1"
+
+    for n, loop in enumerate(layer_cap["loops"]):
         pts = [(px + cal["dx"], py + cal["dy"]) for px, py in loop]
-        if retract > 0.0:
-            out.append("G1 E-" + _fmt(retract) + " F1800\n")
+        if n == 0 and entry_kind is not None:
+            amount = entry_amount  # already retracted: travel as is
+        else:
+            amount = retract
+            out += pull(kind, amount)
         out.append("G1 X" + _fmt(pts[0][0]) + " Y" + _fmt(pts[0][1]) + " F" + _fmt(f_travel) + "\n")
-        if retract > 0.0:
-            out.append("G1 E" + _fmt(retract) + " F1800\n")
+        out += push(kind, amount)
         out.append("G1 F" + _fmt(f_print) + "\n")
         prev = pts[0]
         for pt in pts[1:] + [pts[0]]:
@@ -405,6 +452,8 @@ def _marker_block(layer_cap, state, cal, bbl, cfg):
                 continue
             out.append("G1 X" + _fmt(pt[0]) + " Y" + _fmt(pt[1]) + " E" + ("%.5f" % (d * e_per_mm)) + "\n")
             prev = pt
+    if entry_kind is not None:
+        out += pull(entry_kind, entry_amount)  # hand the nozzle back as retracted as it was
     if not state["e_relative"]:
         out += ["M82\n", "G92 E" + ("%.5f" % state["e"]) + "\n"]
     if state["f"] is not None:

@@ -3,16 +3,9 @@
 Written by another session after the first real run of the spike (see "Current state" in
 CLAUDE.md). Delete this file once the steps are done or folded into CLAUDE.md.
 
-## 1. Close out the spike
+## 1. Close out the spike — done
 
-- **Position:** open the exported G-code in a G-code viewer (the printer is not Bambu, so the
-  slicer preview does not show the edit) and confirm the marker loop at z=32.4 sits on the
-  overhang edge.
-- **Retraction:** look at the lines just before `; WAVE_SPIKE_START`. If the layer ends with a
-  retract (`G1 E-...` or `G10`), the block's un-retract over-extrudes. Fix `_scan_gcode` to
-  track retraction state and have `_marker_block` retract/un-retract only when needed.
-- **numpy:** check which "reference geometry" line the report printed (`toolpath` = numpy is
-  available in OrcaSlicer's Python, `outline` = it is not). This matters for step 3.
+Position, retraction and numpy are checked; results are in CLAUDE.md.
 
 ## 2. Second spike: how to remove the slicer's own toolpaths in the overhang area
 

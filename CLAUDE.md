@@ -21,8 +21,9 @@ standard-tag G-code, one object): the hand-over survived (module global and capa
 instance both), 163 layers were captured (1 with overhangs), the object->plate offset was
 measured (X 157.119, Y 162.847 mm; all 163 layers matched by Z, worst deviation 0.001 mm) and
 1 marker loop was injected at z=32.4. The instance offset reported by the host differs from
-the measured one, as expected. Not yet checked: the loop's position in a G-code viewer and the
-nozzle's retraction state around the injected block.
+the measured one, as expected. Position checked against the G-code: the loop follows the
+layer's "Overhang wall" to within 0.02 mm. numpy is available in OrcaSlicer's Python (the
+report said `reference geometry: toolpath`).
 
 ## Commands
 
@@ -100,8 +101,16 @@ Facts that shaped the approach:
   insert one "Custom" marker loop per overhang area before the next layer-change tag. The block
   restores E mode, feedrate and the active feature/width/height tags afterwards.
 
+Retraction: `_scan_gcode` tracks how far the nozzle is retracted (G1 E moves including wipes,
+and G10/G11). `_marker_block` skips its own retract when the nozzle is already retracted and
+re-applies the original retraction at the end, so the block's net E is zero. With standard tags,
+OrcaSlicer retracts *after* `;LAYER_CHANGE`, so in practice layers end unretracted at the
+insertion point.
+
 Known limits of the spike: one object with one instance, no by-object printing, no wipe tower,
-assumes the nozzle is not retracted at the end of a layer, top-layer overhangs are skipped.
+top-layer overhangs are skipped. Only the outer contour of each overhang area becomes a loop:
+holes are dropped, so for a ring-shaped overhang the supported inner edge (where the fork's
+waves start) is not outlined.
 
 Open design decision for the real plugin: what to do with the walls, bridges and infill the
 slicer already generated in the overhang area — delete those G-code lines, or shrink the slices
