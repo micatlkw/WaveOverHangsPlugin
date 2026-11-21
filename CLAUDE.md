@@ -19,8 +19,11 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 Current state:
 
 - `wave_overhangs_plugin.py` — the plugin (v0.1.0). Ports the fork's generator with pyclipper
-  and prints the waves through the G-code route. Tested outside OrcaSlicer only (synthetic
-  overhangs, fake host, real exported G-code); not yet run inside OrcaSlicer.
+  and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
+  test model: 32 mm square column under a ~45 mm disc at z=30) worked: 71 wave paths in one
+  region on z=30, slices cut on that layer only, exact calibration; the slicer printed the
+  shrunk square's walls inside the waves, bridge + overhang wall over the whole disc ring at
+  z=30.2 (the floor) and solid infill at z=30.4. Not printed yet.
 - `wave_overhang_spike_plugin.py` — the spike that proved the route (hand-over, offset
   calibration, retraction, `shrink` vs `delete`). Kept as reference; see "Spike" below.
 - `probes/` — dependency probes; pyclipper and shapely both install inside OrcaSlicer.
@@ -104,6 +107,9 @@ Facts that shaped the approach:
   layer as `;TYPE:Overhang wall`, at the configured flow (mm³/mm), speed and fan, with retraction,
   fan, E mode, feedrate and tags restored afterwards. Short hops between fronts (≤ the fork's
   connector limit) travel without retracting.
+  Paths keep the generator's order (front level by front level, so separate sides alternate),
+  as the fork prints them; this lets each front cool before the next is laid against it, at the
+  cost of a retracted travel per path when the overhang has several sides.
 
 Porting notes (things that are easy to get wrong):
 

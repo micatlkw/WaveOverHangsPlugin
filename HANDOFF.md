@@ -11,7 +11,7 @@ Position, retraction and numpy are checked; results are in CLAUDE.md.
 
 All three modes were run in OrcaSlicer; results and the recommendation (`shrink`) are in CLAUDE.md.
 
-## 3. Port the generator — done, awaiting a real run
+## 3. Port the generator — done
 
 `wave_overhangs_plugin.py` v0.1.0 (pyclipper; decisions: AGPL-3.0, no outer wall over the
 overhang, every overhang waved). Tested outside OrcaSlicer: `tests/generator_smoke.py` (ring,
@@ -20,8 +20,9 @@ overhang layer, 25 rings r 15.6–24.0 mm, retraction/fan/E state restored, idem
 
 ## 4. Next
 
-- Install `wave_overhangs_plugin.py` in OrcaSlicer, slice the test models, export, and check the
-  `; WAVE_OVERHANGS` report and the waves in a G-code viewer (non-Bambu preview won't show them).
-- Check what the slicer prints on the cut layer and on the layer above (bridge floor).
-- Print one. Defaults are the fork's: 2 mm/s waves, so a large overhang layer takes long
-  (the ring test model: ~26 min for one layer).
+- Done: first real run in OrcaSlicer (see "Current state" in CLAUDE.md); waves, cut and bridge
+  floor are where they should be.
+- Print the test model. Defaults are the fork's (2 mm/s waves, 0.15 mm³/mm, fan 100 %): the
+  wave layer adds about 16 min. Watch: waves bonding to the anchor band, sag between fronts,
+  the bridge floor on top, oozing on the retracted travels between sides.
+- Then: models with several overhang layers (sloped/stacked overhangs) and holes.
