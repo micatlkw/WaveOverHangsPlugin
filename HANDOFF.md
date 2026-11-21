@@ -18,3 +18,10 @@ on polygon offsets; the host only offers pairwise booleans. Before porting, try 
 dependency such as `pyclipper` or `shapely` in the plugin header (`dependencies = [...]`, as
 `../OrcaSlicer/sandboxes/orca_inspector_plugin_any.py` does with numpy). If OrcaSlicer installs
 it, the port is much more direct and faster.
+
+Probes: `probes/probe_pyclipper.py` and `probes/probe_shapely.py` (one package each, because a
+failed dependency install blocks the whole plugin from loading). Install each through the
+Plugins dialog and run it; the result message reports the version and checks round offsets,
+union/difference with holes, open-polyline clipping, open-path buffering, and a timing. Both pass
+outside OrcaSlicer (Python 3.12, pyclipper 1.4.0, shapely 2.2.0 + numpy). Awaiting the result
+inside OrcaSlicer.
