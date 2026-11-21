@@ -91,15 +91,24 @@ Facts that shaped the approach:
 
 `wave_overhang_spike_plugin.py` has two halves joined by a hand-over store:
 
-- **Capture** (`posPerimeters`, per object): per layer, overhang = islands minus the layer below,
-  opened to drop thin slivers; outlines stored as mm tuples keyed by `print_z` (rounded to 3
-  decimals), plus a reference bounding box of the layer's walls.
+- **Capture** (`posSlice`, per object): per layer, overhang = islands minus the layer below,
+  opened to drop thin slivers; the areas (contour and holes) and their marker outlines are stored
+  as mm tuples keyed by `print_z` (rounded to 3 decimals). Every layer is captured before
+  anything is cut. At `posPerimeters` a reference bounding box of each layer's walls is added
+  (if `posSlice` was cached, the areas are captured there too).
 - **Hand-over**: stored both in the module-level `_STATE` and on the capability instance, so the
   report can say which survives. In a real run both survived (verified).
-- **Inject** (`psGCodePostProcess`): scan the G-code per layer, measure the object-to-plate
-  offset by matching wall bounding boxes, refuse to inject if the offset is inconsistent, then
-  insert one "Custom" marker loop per overhang area before the next layer-change tag. The block
-  restores E mode, feedrate and the active feature/width/height tags afterwards.
+- **Inject** (`psGCodePostProcess`): scan the G-code per layer (`_Stream` tracks position, E mode,
+  retraction and feature tags), measure the object-to-plate offset by matching wall bounding
+  boxes, refuse to inject if the offset is inconsistent, then insert one "Custom" marker loop
+  per overhang area before the next layer-change tag. The block restores E mode, feedrate and
+  the active feature/width/height tags afterwards.
+- **`mode`** (plugin config) decides what happens to the slicer's own toolpaths in the overhang
+  area: `marker` leaves them, `shrink` cuts the areas out of `region.slices` at `posSlice` (then
+  `layer.make_slices()`), `delete` clips the overhang layer's extrusion moves against the areas
+  at post-process (inside parts become travel; `G92 E` resyncs in absolute E mode).
+- **Census** (end of the report): per overhang layer, mm extruded inside the area by feature,
+  on that layer and on the layer above. This is how the modes are compared.
 
 Retraction: `_scan_gcode` tracks how far the nozzle is retracted (G1 E moves including wipes,
 and G10/G11). `_marker_block` skips its own retract when the nozzle is already retracted and
@@ -112,6 +121,15 @@ top-layer overhangs are skipped. Only the outer contour of each overhang area be
 holes are dropped, so for a ring-shaped overhang the supported inner edge (where the fork's
 waves start) is not outlined.
 
-Open design decision for the real plugin: what to do with the walls, bridges and infill the
-slicer already generated in the overhang area — delete those G-code lines, or shrink the slices
-at `posSlice` so they are never generated (which changes how the layer above is classified).
+What to do with the slicer's own walls, bridges and infill in the overhang area was tested with
+all three modes in OrcaSlicer (test model: 4 overhang areas on one layer, z=30):
+
+- `shrink`: z=30 inside the area is empty except for the marker; the slicer moves its bridge and
+  overhang wall up exactly one layer (z=30.2, identical amounts) and shifts the solid shells
+  above up by one layer. No further cascade; the rest of the file differs only in `M73`
+  progress lines. This matches the fork's design (wave layer, then a bridge floor above it).
+- `delete`: z=30 inside the area is empty except for the marker, but bridge stubs remain at the
+  anchors and z=30.2 stays plain "Internal solid infill" printed over the waves/air with no
+  bridge settings.
+
+Recommendation: `shrink` for the real plugin; `delete` only as a fallback.

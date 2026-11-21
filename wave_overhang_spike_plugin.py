@@ -3,40 +3,59 @@
 #
 # [tool.orcaslicer.plugin]
 # name = "Wave Overhang Spike"
-# description = "Spike: captures overhang areas at slice time and draws a marker loop around each one in the exported G-code."
+# description = "Spike: captures overhang areas at slice time, optionally removes the slicer's own toolpaths there, and draws a marker loop around each one in the exported G-code."
 # author = "WaveOverHangsPlugin"
-# version = "0.01"
+# version = "0.02"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhang Spike -- proves the two halves of a G-code-level wave plugin can be joined.
 
-NOT a wave-overhang implementation. It answers three questions before any of
-the real algorithm is ported:
+NOT a wave-overhang implementation. It answers, before any of the real
+algorithm is ported:
 
 1. Does plugin state survive from the slicing hooks to the G-code post-process
    call? (There is no live Print at that step, so everything must be carried.)
 2. Do the coordinates line up? Slice geometry is in object space; the G-code is
    in plate space.
 3. Does an injected path show up in the preview / print where expected?
+4. How should the slicer's own walls, bridges and infill in an overhang area be
+   removed so waves can replace them? (the "mode" option, below)
 
 How it works
 ------------
-* Step.posPerimeters (per object): for every layer, overhang = this layer's
-  islands minus the layer below, with thin slivers removed. The outline of each
-  overhang area (inset by half a line width) is copied out as plain mm tuples,
-  keyed by print Z. A reference bounding box of the layer's wall toolpaths is
-  copied too (falls back to the slice outline when numpy is unavailable).
+* Step.posSlice (per object): for every layer, overhang = this layer's islands
+  minus the layer below, with thin slivers removed. Each overhang area
+  (contour and holes) and its outline (inset by half a line width) is copied
+  out as plain mm tuples, keyed by print Z. Every layer is captured before
+  anything is cut, so "shrink" never makes the capture see a cut layer as the
+  support of the layer above.
+* Step.posPerimeters (per object): a reference bounding box of each layer's wall
+  toolpaths is added (falls back to the slice outline when numpy is unavailable).
 * Step.psGCodePostProcess: the G-code is parsed per layer; the bounding box of
   its wall extrusions is compared with the captured reference box to MEASURE
   the object-to-plate offset. With that offset, one "Custom" marker loop per
   overhang area is appended to the end of its layer.
+
+Modes ("mode" in the plugin config)
+-----------------------------------
+* "marker": marker loops only; the slicer's toolpaths are left alone.
+* "shrink": at posSlice the overhang areas are cut out of the layer's slices, so
+  the slicer never generates walls or infill there. The layer above then hangs
+  over air where the cut was, which changes how the slicer classifies it.
+* "delete": the slices are left alone; at post-process the overhang layer's
+  extrusion moves are clipped against the overhang areas and the parts inside
+  become travel moves.
+
+The report ends with a census, for each overhang layer and the layer above it,
+of what is extruded inside the overhang area, by feature. Compare it between
+modes.
 
 A report is written as "; WAVE_SPIKE ..." comment lines right after the first
 line of the G-code file. Read that to get the answers.
 
 Limits (it is a spike): one object with one instance on the plate, no
 sequential (by-object) printing, no wipe tower. If the measured offset is not
-consistent the plugin writes the report and injects nothing.
+consistent the plugin writes the report and changes nothing else.
 
 The marker loops extrude at marker_flow_ratio (default 5% of a normal line) so
 an accidental print is harmless; raise it to 1.0 to print real lines.
@@ -47,15 +66,18 @@ import math
 import orca
 
 _DEFAULTS = {
+    "mode":                  "marker",  # "marker", "shrink" or "delete" (see the module docstring)
     "min_overhang_width_mm": 0.5,   # overhang strips narrower than this are ignored (e.g. gently sloped walls)
     "min_overhang_area_mm2": 1.0,   # overhang areas smaller than this are ignored
     "marker_flow_ratio":     0.05,  # extrusion amount of the marker loop relative to a normal line
     "marker_speed_mm_s":     20.0,  # print speed of the marker loop
-    "inject":                1.0,   # 0: measure and report only, leave the toolpaths untouched
+    "inject":                1.0,   # 0: measure and report only, leave the G-code untouched
 }
+_MODES = ("marker", "shrink", "delete")
 
 _WALL_ROLES = ("Outer wall", "Inner wall", "Overhang wall")
 _TAG = "; WAVE_SPIKE"
+_CENSUS_LAYERS = 8  # overhang layers listed individually in the census
 
 # Module-level hand-over store: object id -> capture dict. The same data is also
 # kept on the capability instance, so the report can say which one survived.
@@ -71,8 +93,14 @@ def _params(self):
         src = json.loads(self.get_config())
     except (AttributeError, TypeError, ValueError):
         src = {}
+    if not isinstance(src, dict):
+        src = {}
     out = {}
     for key, default in _DEFAULTS.items():
+        if isinstance(default, str):  # only "mode"
+            value = str(src.get(key, default)).strip().lower()
+            out[key] = value if value in _MODES else default
+            continue
         try:
             out[key] = float(src[key])
         except (KeyError, TypeError, ValueError):
@@ -99,6 +127,15 @@ def _median(values):
     s = sorted(values)
     n = len(s)
     return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
+
+
+def _fmt(v):
+    s = "%.3f" % v
+    return s.rstrip("0").rstrip(".") if "." in s else s
+
+
+def _mm_points(poly, k):
+    return [(pt.x * k, pt.y * k) for pt in poly.points]
 
 
 # ----------------------------------------------------------------------------
@@ -162,7 +199,12 @@ def _outline_bbox(layer, k):
     return (min(xs) * k, min(ys) * k, max(xs) * k, max(ys) * k)
 
 
-def _capture_object(ctx, p):
+def _capture_areas(ctx, p):
+    """Overhang areas and marker outlines of every layer, from the slices as they are now.
+
+    Returns (capture, found). `capture` holds plain values only. `found` is
+    [(layer, [ExPolygon])] for "shrink"; it is valid only during this execute().
+    """
     obj = ctx.object
     k = orca.slicing.unscale(1)  # mm per scaled unit, read live
     line_w = _first_float(ctx.config_value("nozzle_diameter"), 0.4)
@@ -170,44 +212,39 @@ def _capture_object(ctx, p):
     half_w = int(round(line_w * 0.5 / k))
     min_area = p["min_overhang_area_mm2"] / (k * k)
 
-    use_toolpaths = True
     layers = {}
+    found = []
     overhang_layers = 0
     regions = 0
     collapsed = 0
     for layer in obj.layers():
         if ctx.cancelled():
             break
-        ref = None
-        if use_toolpaths:
-            try:
-                ref = _toolpath_bbox(layer, k)
-            except Exception:
-                use_toolpaths = False  # numpy missing: use the slice outline from here on
-        kind = "toolpath"
-        if ref is None:
-            ref = _outline_bbox(layer, k)
-            kind = "outline"
-
+        areas = _overhang_areas(layer, open_r, min_area)
         loops = []
-        for area in _overhang_areas(layer, open_r, min_area):
+        areas_mm = []
+        for area in areas:
+            areas_mm.append((_mm_points(area.contour, k), [_mm_points(h, k) for h in area.holes]))
             inset = area.offset(-half_w)
             if not inset:
                 collapsed += 1
                 continue
             for ex in inset:
-                pts = [(pt.x * k, pt.y * k) for pt in ex.contour.points]
+                pts = _mm_points(ex.contour, k)
                 if len(pts) >= 3:
                     loops.append(pts)
         if loops:
             overhang_layers += 1
             regions += len(loops)
+        if areas:
+            found.append((layer, areas))
         layers[_zkey(layer.print_z)] = {
             "z": float(layer.print_z),
             "height": float(layer.height),
-            "ref": ref,
-            "ref_kind": kind,
+            "ref": None,
+            "ref_kind": None,
             "loops": loops,
+            "areas": areas_mm,
         }
 
     instance_offset = None
@@ -224,7 +261,57 @@ def _capture_object(ctx, p):
         "regions": regions,
         "collapsed": collapsed,
         "instance_offset": instance_offset,
-    }
+        "areas_step": None,
+        "mode": p["mode"],
+        "cut_layers": 0,
+    }, found
+
+
+def _cut_overhangs(found):
+    """"shrink": cut the overhang areas out of every region's slices. Returns layers cut."""
+    cut = 0
+    for layer, areas in found:
+        for region in layer.regions():
+            by_type = {}
+            for surface in region.slices.surfaces:
+                pieces = [surface.expolygon]
+                for area in areas:
+                    pieces = [q for piece in pieces for q in piece.diff_ex(area)]
+                    if not pieces:
+                        break
+                if pieces:
+                    by_type.setdefault(surface.surface_type, []).extend(pieces)
+            region.slices.clear()
+            for surface_type, expolys in by_type.items():
+                region.slices.append(expolys, surface_type)
+        # Re-derive the merged islands, so perimeters and the classification of
+        # the layer above see the cut geometry.
+        layer.make_slices()
+        cut += 1
+    return cut
+
+
+def _capture_refs(ctx, cap):
+    """Add each layer's reference bounding box (for the offset calibration) to `cap`."""
+    k = orca.slicing.unscale(1)
+    use_toolpaths = True
+    for layer in ctx.object.layers():
+        if ctx.cancelled():
+            break
+        ref = None
+        if use_toolpaths:
+            try:
+                ref = _toolpath_bbox(layer, k)
+            except Exception:
+                use_toolpaths = False  # numpy missing: use the slice outline from here on
+        kind = "toolpath"
+        if ref is None:
+            ref = _outline_bbox(layer, k)
+            kind = "outline"
+        entry = cap["layers"].get(_zkey(layer.print_z))
+        if entry is not None:
+            entry["ref"] = ref
+            entry["ref_kind"] = kind
 
 
 # ----------------------------------------------------------------------------
@@ -245,104 +332,128 @@ def _parse_words(code):
     return parts[0].upper(), words
 
 
+class _Stream:
+    """State of a G-code stream, advanced one line at a time.
+
+    "retracted" is the filament length (mm) pulled back by G1 E moves (wipes
+    included) and not yet pushed back; "fw_retracted" is True between a firmware
+    G10 and G11. "e" is the E axis position (meaningful in absolute E mode).
+    """
+    _FIELDS = ("x", "y", "e", "f", "e_relative", "retracted", "fw_retracted",
+               "feature", "feature_line", "width_line", "height_line")
+
+    def __init__(self, e_relative, state=None):
+        self.x = self.y = None
+        self.e = 0.0
+        self.f = None
+        self.e_relative = e_relative
+        self.retracted = 0.0
+        self.fw_retracted = False
+        self.feature = None
+        self.feature_line = self.width_line = self.height_line = None
+        if state:
+            for name in self._FIELDS:
+                if name in state:
+                    setattr(self, name, state[name])
+
+    def snapshot(self):
+        return {name: getattr(self, name) for name in self._FIELDS}
+
+    def feed(self, raw):
+        """Advance over one line. Returns a move dict for G0-G3, else None."""
+        line = raw.strip()
+        if not line:
+            return None
+        if line[0] == ";":
+            body = line[1:]
+            if body.startswith(" FEATURE: ") or body.startswith("TYPE:"):
+                self.feature = body.split(":", 1)[1].strip()
+                self.feature_line = raw
+            elif body.startswith(" LINE_WIDTH: ") or body.startswith("WIDTH:"):
+                self.width_line = raw
+            elif body.startswith(" LAYER_HEIGHT: ") or body.startswith("HEIGHT:"):
+                self.height_line = raw
+            return None
+
+        cmd, w = _parse_words(line.split(";", 1)[0])
+        if cmd == "M82":
+            self.e_relative = False
+        elif cmd == "M83":
+            self.e_relative = True
+        elif cmd == "G92":
+            if "E" in w:
+                self.e = w["E"]
+        elif cmd == "G10":
+            self.fw_retracted = True
+        elif cmd == "G11":
+            self.fw_retracted = False
+        elif cmd in ("G0", "G1", "G2", "G3"):
+            if "F" in w:
+                self.f = w["F"]
+            x0, y0 = self.x, self.y
+            de = 0.0
+            extruding = False
+            if "E" in w:
+                de = w["E"] if self.e_relative else w["E"] - self.e
+                if not self.e_relative:
+                    self.e = w["E"]
+                if de < 0.0:
+                    self.retracted -= de
+                elif de > 0.0:
+                    # Push back what was retracted first; only the rest is extrusion.
+                    extruding = de > self.retracted + 1e-6
+                    self.retracted = max(0.0, self.retracted - de)
+            self.x = w.get("X", self.x)
+            self.y = w.get("Y", self.y)
+            return {"cmd": cmd, "w": w, "x0": x0, "y0": y0, "x1": self.x, "y1": self.y,
+                    "de": de, "extruding": extruding,
+                    "moved": ("X" in w) or ("Y" in w)}
+        return None
+
+
 def _scan_gcode(lines, e_relative):
     """Walk the file once. Returns (layers, bbl_flavor).
 
     Each layer: {"z", "marker" (line index of its layer-change tag), "box" (wall
     extrusion bbox or None), "end" (line index where the layer ends, or None for the
-    last layer), "end_state" (feature/width/height tag lines, F, E, E mode and
-    retraction state at "end")}.
-
-    Retraction state: "retracted" is the filament length (mm) pulled back by G1 E
-    moves (wipes included) and not yet pushed back; "fw_retracted" is True between
-    a firmware G10 and G11.
+    last layer), "start_state" / "end_state" (_Stream snapshots at "marker" / "end")}.
     """
     layers = []
     cur = None
     bbl = False
     want_z = False
-    x = y = None
-    last_e = 0.0
-    last_f = None
-    retracted = 0.0
-    fw_retracted = False
-    feature = None
-    feature_line = width_line = height_line = None
-
-    def snapshot():
-        return {
-            "feature_line": feature_line, "width_line": width_line, "height_line": height_line,
-            "f": last_f, "e": last_e, "e_relative": e_relative,
-            "retracted": retracted, "fw_retracted": fw_retracted,
-        }
+    s = _Stream(e_relative)
 
     for i, raw in enumerate(lines):
         line = raw.strip()
-        if not line:
-            continue
-        if line[0] == ";":
+        if line.startswith(";"):
             body = line[1:]
             if body.startswith(" CHANGE_LAYER") or body.startswith("LAYER_CHANGE"):
                 bbl = bbl or body.startswith(" CHANGE_LAYER")
                 if cur is not None:
                     cur["end"] = i
-                    cur["end_state"] = snapshot()
-                cur = {"z": None, "marker": i, "box": None, "end": None, "end_state": None}
+                    cur["end_state"] = s.snapshot()
+                cur = {"z": None, "marker": i, "box": None, "end": None,
+                       "start_state": s.snapshot(), "end_state": None}
                 layers.append(cur)
                 want_z = True
-            elif body.startswith(" Z_HEIGHT: ") or body.startswith("Z:"):
+                continue
+            if body.startswith(" Z_HEIGHT: ") or body.startswith("Z:"):
                 if want_z and cur is not None:
                     try:
                         cur["z"] = float(body.split(":", 1)[1])
                     except ValueError:
                         pass
                     want_z = False
-            elif body.startswith(" FEATURE: ") or body.startswith("TYPE:"):
-                feature = body.split(":", 1)[1].strip()
-                feature_line = raw
-            elif body.startswith(" LINE_WIDTH: ") or body.startswith("WIDTH:"):
-                width_line = raw
-            elif body.startswith(" LAYER_HEIGHT: ") or body.startswith("HEIGHT:"):
-                height_line = raw
-            continue
-
-        cmd, w = _parse_words(line.split(";", 1)[0])
-        if cmd == "M82":
-            e_relative = False
-        elif cmd == "M83":
-            e_relative = True
-        elif cmd == "G92":
-            if "E" in w:
-                last_e = w["E"]
-        elif cmd == "G10":
-            fw_retracted = True
-        elif cmd == "G11":
-            fw_retracted = False
-        elif cmd in ("G0", "G1", "G2", "G3"):
-            if "F" in w:
-                last_f = w["F"]
-            nx = w.get("X", x)
-            ny = w.get("Y", y)
-            extruding = False
-            if "E" in w:
-                de = w["E"] if e_relative else w["E"] - last_e
-                if not e_relative:
-                    last_e = w["E"]
-                if de < 0.0:
-                    retracted -= de
-                elif de > 0.0:
-                    # Push back what was retracted first; only the rest is extrusion.
-                    extruding = de > retracted + 1e-6
-                    retracted = max(0.0, retracted - de)
-            moved = ("X" in w) or ("Y" in w)
-            if (extruding and moved and cur is not None and feature in _WALL_ROLES
-                    and x is not None and y is not None and nx is not None and ny is not None):
-                b = cur["box"]
-                lo_x, hi_x = min(x, nx), max(x, nx)
-                lo_y, hi_y = min(y, ny), max(y, ny)
-                cur["box"] = (lo_x, lo_y, hi_x, hi_y) if b is None else (
-                    min(b[0], lo_x), min(b[1], lo_y), max(b[2], hi_x), max(b[3], hi_y))
-            x, y = nx, ny
+                continue
+        mv = s.feed(raw)
+        if (mv is not None and mv["extruding"] and mv["moved"] and cur is not None
+                and s.feature in _WALL_ROLES and None not in (mv["x0"], mv["y0"], mv["x1"], mv["y1"])):
+            b = cur["box"]
+            lo_x, hi_x = min(mv["x0"], mv["x1"]), max(mv["x0"], mv["x1"])
+            lo_y, hi_y = min(mv["y0"], mv["y1"]), max(mv["y0"], mv["y1"])
+            cur["box"] = (lo_x, lo_y, hi_x, hi_y) if b is None else (
+                min(b[0], lo_x), min(b[1], lo_y), max(b[2], hi_x), max(b[3], hi_y))
     return layers, bbl
 
 
@@ -385,10 +496,184 @@ def _calibrate(captured, gcode_layers):
     return cal
 
 
-def _fmt(v):
-    s = "%.3f" % v
-    return s.rstrip("0").rstrip(".") if "." in s else s
+# --- planar geometry on mm tuples (plate space) -------------------------------
 
+def _plate_areas(areas_mm, cal):
+    """Captured areas shifted to plate space, as [(contour, holes, bbox)]."""
+    out = []
+    for contour, holes in areas_mm:
+        c = [(x + cal["dx"], y + cal["dy"]) for x, y in contour]
+        hs = [[(x + cal["dx"], y + cal["dy"]) for x, y in h] for h in holes]
+        xs = [pt[0] for pt in c]
+        ys = [pt[1] for pt in c]
+        out.append((c, hs, (min(xs), min(ys), max(xs), max(ys))))
+    return out
+
+
+def _point_in_poly(x, y, poly):
+    inside = False
+    xj, yj = poly[-1]
+    for xi, yi in poly:
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+            inside = not inside
+        xj, yj = xi, yi
+    return inside
+
+
+def _in_areas(x, y, areas):
+    for contour, holes, box in areas:
+        if (box[0] <= x <= box[2] and box[1] <= y <= box[3] and _point_in_poly(x, y, contour)
+                and not any(_point_in_poly(x, y, h) for h in holes)):
+            return True
+    return False
+
+
+def _split_segment(x0, y0, x1, y1, areas):
+    """[(t0, t1, inside)] covering the segment from t=0 to t=1, alternating inside/outside."""
+    dx, dy = x1 - x0, y1 - y0
+    lo_x, hi_x = min(x0, x1), max(x0, x1)
+    lo_y, hi_y = min(y0, y1), max(y0, y1)
+    ts = {0.0, 1.0}
+    for contour, holes, box in areas:
+        if box[0] > hi_x or box[2] < lo_x or box[1] > hi_y or box[3] < lo_y:
+            continue
+        for poly in [contour] + holes:
+            qx0, qy0 = poly[-1]
+            for qx1, qy1 in poly:
+                sx, sy = qx1 - qx0, qy1 - qy0
+                den = dx * sy - dy * sx
+                if abs(den) > 1e-12:
+                    px, py = qx0 - x0, qy0 - y0
+                    t = (px * sy - py * sx) / den
+                    u = (px * dy - py * dx) / den
+                    if 0.0 < t < 1.0 and 0.0 <= u <= 1.0:
+                        ts.add(t)
+                qx0, qy0 = qx1, qy1
+    ts = sorted(ts)
+    pieces = []
+    for a, b in zip(ts, ts[1:]):
+        if b - a < 1e-9:
+            continue
+        m = 0.5 * (a + b)
+        inside = _in_areas(x0 + m * dx, y0 + m * dy, areas)
+        if pieces and pieces[-1][2] == inside:
+            pieces[-1] = (pieces[-1][0], b, inside)
+        else:
+            pieces.append((a, b, inside))
+    return pieces or [(0.0, 1.0, False)]
+
+
+# --- "delete" mode and the census ---------------------------------------------
+
+def _new_delete_stats():
+    return {"layers": 0, "moves": 0, "removed": 0, "split": 0, "filament": 0.0,
+            "by_feature": {}, "skipped": 0}
+
+
+def _delete_in_layer(lines, gl, areas, stats):
+    """Replacement for lines[marker:end] of one G-code layer in which nothing is
+    extruded inside `areas`: the inside parts of extrusion moves become travel."""
+    s = _Stream(None, gl["start_state"])
+    out = []
+    touched = False
+    for raw in lines[gl["marker"]:gl["end"]]:
+        retracted_before = s.retracted
+        e_before = s.e
+        mv = s.feed(raw)
+        if (mv is None or not mv["extruding"] or not mv["moved"]
+                or None in (mv["x0"], mv["y0"], mv["x1"], mv["y1"])):
+            out.append(raw)
+            continue
+        x0, y0, x1, y1 = mv["x0"], mv["y0"], mv["x1"], mv["y1"]
+        pieces = _split_segment(x0, y0, x1, y1, areas)
+        if not any(inside for _, _, inside in pieces):
+            out.append(raw)
+            continue
+        w = mv["w"]
+        if mv["cmd"] != "G1" or "Z" in w or retracted_before > 1e-6:
+            # Arcs, Z moves and moves that also un-retract are left alone in the spike.
+            stats["skipped"] += 1
+            out.append(raw)
+            continue
+
+        de = mv["de"]
+        e_run = e_before
+        removed = 0.0
+        for n, (a, b, inside) in enumerate(pieces):
+            text = "G1 X" + _fmt(x0 + b * (x1 - x0)) + " Y" + _fmt(y0 + b * (y1 - y0))
+            part = de * (b - a)
+            if inside:
+                removed += part
+            elif s.e_relative:
+                text += " E%.5f" % part
+            else:
+                e_run += part
+                text += " E%.5f" % e_run
+            if n == 0 and "F" in w:
+                text += " F" + _fmt(w["F"])
+            out.append(text + "\n")
+        if not s.e_relative:
+            out.append("G92 E%.5f\n" % s.e)  # resync the absolute E counter
+
+        touched = True
+        stats["moves"] += 1
+        stats["removed" if len(pieces) == 1 else "split"] += 1
+        stats["filament"] += removed
+        feature = s.feature or "?"
+        stats["by_feature"][feature] = stats["by_feature"].get(feature, 0) + 1
+    if touched:
+        stats["layers"] += 1
+    return out
+
+
+def _census(lines, gl, areas):
+    """{feature: mm of extrusion path inside `areas`} for one G-code layer."""
+    s = _Stream(None, gl["start_state"])
+    end = gl["end"] if gl["end"] is not None else len(lines)
+    lengths = {}
+    for raw in lines[gl["marker"]:end]:
+        mv = s.feed(raw)
+        if (mv is None or not mv["extruding"] or not mv["moved"]
+                or None in (mv["x0"], mv["y0"], mv["x1"], mv["y1"])):
+            continue
+        length = math.hypot(mv["x1"] - mv["x0"], mv["y1"] - mv["y0"])
+        for a, b, inside in _split_segment(mv["x0"], mv["y0"], mv["x1"], mv["y1"], areas):
+            if inside:
+                feature = s.feature or "?"
+                lengths[feature] = lengths.get(feature, 0.0) + (b - a) * length
+    return lengths
+
+
+def _fmt_lengths(lengths):
+    items = sorted(((v, k) for k, v in lengths.items() if v >= 0.05), reverse=True)
+    return ", ".join("%s %s" % (k, _fmt(v)) for v, k in items) or "nothing"
+
+
+def _census_report(lines, cap, cal, e_relative):
+    gcode_layers, _ = _scan_gcode(lines, e_relative)
+    rows = []
+    for idx, gl in enumerate(gcode_layers):
+        if gl["z"] is None:
+            continue
+        cl = cap["layers"].get(_zkey(gl["z"]))
+        if cl is None or not cl["areas"]:
+            continue
+        if len(rows) >= _CENSUS_LAYERS:
+            rows.append("census: further overhang layers not listed")
+            break
+        areas = _plate_areas(cl["areas"], cal)
+        here = _fmt_lengths(_census(lines, gl, areas))
+        above = "none (top layer)"
+        if idx + 1 < len(gcode_layers):
+            nxt = gcode_layers[idx + 1]
+            above = "z=%s: %s" % (_fmt(nxt["z"]) if nxt["z"] is not None else "?",
+                                  _fmt_lengths(_census(lines, nxt, areas)))
+        rows.append("census z=%s (mm extruded inside the overhang area): this layer: %s; layer above %s"
+                    % (_fmt(gl["z"]), here, above))
+    return rows
+
+
+# --- marker loops ---------------------------------------------------------------
 
 def _marker_block(layer_cap, state, cal, bbl, cfg):
     """G-code lines drawing every marker loop of one layer, leaving the stream state as found.
@@ -472,7 +757,7 @@ def _post_process(lines, captures, survived, cfg):
               % ("SURVIVED" if survived[0] else "LOST", "SURVIVED" if survived[1] else "LOST")]
     injected = 0
 
-    if any(line.startswith(_TAG + "_START") for line in lines):
+    if any(line.startswith(_TAG + "_START") or line.startswith(_TAG + " ") for line in lines):
         return lines, "already processed, left untouched"
 
     if not captures:
@@ -481,7 +766,15 @@ def _post_process(lines, captures, survived, cfg):
         report.append("captured %d objects; the spike supports exactly one, nothing injected" % len(captures))
     else:
         cap = next(iter(captures.values()))
-        kinds = sorted({l["ref_kind"] for l in cap["layers"].values()})
+        mode = cfg["mode"]
+        report.append("mode: %s (at slice time: %s); overhang areas captured at %s; slices cut on %d layer(s)"
+                      % (mode, cap["mode"], cap["areas_step"], cap["cut_layers"]))
+        if mode == "shrink" and cap["cut_layers"] == 0 and cap["overhang_layers"] > 0:
+            report.append("WARNING: shrink is selected but no slices were cut (posSlice did not run "
+                          "with shrink selected); re-slice from scratch")
+        elif mode != "shrink" and cap["cut_layers"] > 0:
+            report.append("WARNING: the slices were cut by shrink although the mode is now %s" % mode)
+        kinds = sorted({l["ref_kind"] or "none" for l in cap["layers"].values()})
         report.append("captured %d layers, %d with overhangs, %d overhang areas (%d too thin to outline)"
                       % (len(cap["layers"]), cap["overhang_layers"], cap["regions"], cap["collapsed"]))
         report.append("reference geometry: " + "/".join(kinds))
@@ -501,23 +794,40 @@ def _post_process(lines, captures, survived, cfg):
             report.append("calibration FAILED: " + cal["why"] + "; nothing injected")
         elif not cfg["inject"]:
             report.append("inject = 0: report only")
+            report += _census_report(lines, cap, cal, cfg["e_relative"])
         else:
             cfg = dict(cfg, line_width=cap["line_width"])
+            delete = mode == "delete"
+            dstats = _new_delete_stats()
             no_end = 0
-            # Bottom-up scan order, inserted top-down so earlier line indices stay valid.
+            # Bottom-up scan order, edited top-down so earlier line indices stay valid.
             for gl in reversed(gcode_layers):
                 if gl["z"] is None:
                     continue
                 cl = cap["layers"].get(_zkey(gl["z"]))
-                if cl is None or not cl["loops"]:
+                if cl is None or not (cl["loops"] or (delete and cl["areas"])):
                     continue
                 if gl["end"] is None:
                     no_end += 1  # last layer: no following layer-change tag to anchor on
                     continue
-                lines[gl["end"]:gl["end"]] = _marker_block(cl, gl["end_state"], cal, bbl, cfg)
-                injected += len(cl["loops"])
+                end = gl["end"]
+                if delete and cl["areas"]:
+                    new = _delete_in_layer(lines, gl, _plate_areas(cl["areas"], cal), dstats)
+                    lines[gl["marker"]:end] = new
+                    end = gl["marker"] + len(new)
+                if cl["loops"]:
+                    lines[end:end] = _marker_block(cl, gl["end_state"], cal, bbl, cfg)
+                    injected += len(cl["loops"])
             report.append("injected %d marker loop(s)" % injected
                           + (" (%d layer(s) skipped: top layer has no anchor)" % no_end if no_end else ""))
+            if delete:
+                report.append("delete: %d extrusion move(s) clipped on %d layer(s) (%d removed whole, %d split), "
+                              "%s mm of filament removed; by feature: %s; %d move(s) left alone (arc, Z or un-retract)"
+                              % (dstats["moves"], dstats["layers"], dstats["removed"], dstats["split"],
+                                 _fmt(dstats["filament"]),
+                                 ", ".join("%s %d" % kv for kv in sorted(dstats["by_feature"].items())) or "none",
+                                 dstats["skipped"]))
+            report += _census_report(lines, cap, cal, cfg["e_relative"])
 
     stamp = [_TAG + " " + text + "\n" for text in report]
     lines[1 if lines else 0:1 if lines else 0] = stamp
@@ -536,29 +846,66 @@ class WaveOverhangSpike(orca.slicing.SlicingPipelineCapabilityBase):
         return _DEFAULTS
 
     def execute(self, ctx):
-        if ctx.step == orca.slicing.Step.posPerimeters and ctx.object is not None:
-            return self._capture(ctx)
-        if ctx.step == orca.slicing.Step.psGCodePostProcess and ctx.gcode_path:
+        step = ctx.step
+        if step == orca.slicing.Step.posSlice and ctx.object is not None:
+            return self._capture_slice(ctx)
+        if step == orca.slicing.Step.posPerimeters and ctx.object is not None:
+            return self._capture_perimeters(ctx)
+        if step == orca.slicing.Step.psGCodePostProcess and ctx.gcode_path:
             return self._inject(ctx)
         return orca.ExecutionResult.success()
 
-    def _capture(self, ctx):
-        cap = _capture_object(ctx, _params(self))
-        if ctx.cancelled():
-            return orca.ExecutionResult.success()
-        # Forget objects that are no longer part of this print, then store this one in both places.
-        live = {o.id() for o in ctx.print.objects()}
+    def _stores(self):
         store = getattr(self, "_spike_state", None)
         if store is None:
             store = {}
             self._spike_state = store
-        for target in (_STATE, store):
-            for stale in [oid for oid in target if oid not in live]:
-                del target[stale]
+        return (_STATE, store)
+
+    def _remember(self, ctx, cap):
+        """Store `cap` for this object in both hand-over stores, dropping objects no longer printed."""
+        live = None
+        try:
+            live = {o.id() for o in ctx.print.objects()}
+        except AttributeError:
+            pass
+        for target in self._stores():
+            if live is not None:
+                for stale in [oid for oid in target if oid not in live]:
+                    del target[stale]
             target[ctx.object.id()] = cap
+
+    def _capture_slice(self, ctx):
+        p = _params(self)
+        cap, found = _capture_areas(ctx, p)
+        if ctx.cancelled():
+            return orca.ExecutionResult.success()
+        cap["areas_step"] = "posSlice"
+        if p["mode"] == "shrink":
+            cap["cut_layers"] = _cut_overhangs(found)
+        self._remember(ctx, cap)
         return orca.ExecutionResult.success(
-            "Wave Overhang Spike: captured %d layers, %d overhang areas on %d layers"
-            % (len(cap["layers"]), cap["regions"], cap["overhang_layers"]))
+            "Wave Overhang Spike: %d overhang areas on %d layers; cut from the slices on %d layers"
+            % (cap["regions"], cap["overhang_layers"], cap["cut_layers"]))
+
+    def _capture_perimeters(self, ctx):
+        oid = ctx.object.id()
+        cap = None
+        for target in self._stores():
+            cap = target.get(oid)
+            if cap is not None:
+                break
+        if cap is None:
+            # posSlice did not fire (its result was cached from before this plugin
+            # was active): capture the areas from the slices as they are now.
+            cap, _ = _capture_areas(ctx, _params(self))
+            cap["areas_step"] = "posPerimeters"
+        if ctx.cancelled():
+            return orca.ExecutionResult.success()
+        _capture_refs(ctx, cap)
+        self._remember(ctx, cap)
+        return orca.ExecutionResult.success(
+            "Wave Overhang Spike: reference boxes captured for %d layers" % len(cap["layers"]))
 
     def _inject(self, ctx):
         p = _params(self)
@@ -568,6 +915,7 @@ class WaveOverhangSpike(orca.slicing.SlicingPipelineCapabilityBase):
 
         rel = str(ctx.config_value("use_relative_e_distances")).strip().lower()
         cfg = {
+            "mode":              p["mode"],
             "e_relative":        rel in ("1", "true"),
             "filament_diameter": _first_float(ctx.config_value("filament_diameter"), 1.75),
             "retract":           min(_first_float(ctx.config_value("retraction_length"), 0.8), 2.0),
@@ -581,9 +929,9 @@ class WaveOverhangSpike(orca.slicing.SlicingPipelineCapabilityBase):
         # surrogateescape keeps any non-UTF-8 bytes intact through the round trip.
         with open(ctx.gcode_path, "r", encoding="utf-8", errors="surrogateescape", newline="") as f:
             lines = f.readlines()
-        before = len(lines)
+        before = list(lines)
         lines, summary = _post_process(lines, captures, survived, cfg)
-        if len(lines) != before:
+        if lines != before:
             with open(ctx.gcode_path, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
                 f.writelines(lines)
         return orca.ExecutionResult.success("Wave Overhang Spike: " + summary)
