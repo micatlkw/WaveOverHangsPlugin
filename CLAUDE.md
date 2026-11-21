@@ -14,31 +14,35 @@ Both are cloned next to this repo and are the reference material for all work he
 - `../OrcaSlicer` — upstream (2.6.0-dev), contains the plugin system.
 - `../OrcaSlicer-WaveOverhangs` — the fork; the algorithm is `src/libslic3r/WaveOverhangs/WaveOverhangs.cpp`.
 
-Current state: only a spike exists (`wave_overhang_spike_plugin.py`). It is not a wave
-implementation; it proves the hand-over between slice-time hooks and G-code post-processing.
-It was first checked against a fake host, then run once inside OrcaSlicer (non-Bambu printer,
-standard-tag G-code, one object): the hand-over survived (module global and capability
-instance both), 163 layers were captured (1 with overhangs), the object->plate offset was
-measured (X 157.119, Y 162.847 mm; all 163 layers matched by Z, worst deviation 0.001 mm) and
-1 marker loop was injected at z=32.4. The instance offset reported by the host differs from
-the measured one, as expected. Position checked against the G-code: the loop follows the
-layer's "Overhang wall" to within 0.02 mm. numpy is available in OrcaSlicer's Python (the
-report said `reference geometry: toolpath`).
+Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGPL code.
+
+Current state:
+
+- `wave_overhangs_plugin.py` — the plugin (v0.1.0). Ports the fork's generator with pyclipper
+  and prints the waves through the G-code route. Tested outside OrcaSlicer only (synthetic
+  overhangs, fake host, real exported G-code); not yet run inside OrcaSlicer.
+- `wave_overhang_spike_plugin.py` — the spike that proved the route (hand-over, offset
+  calibration, retraction, `shrink` vs `delete`). Kept as reference; see "Spike" below.
+- `probes/` — dependency probes; pyclipper and shapely both install inside OrcaSlicer.
 
 ## Commands
 
 There is no build, lint or test setup. A plugin is a single `.py` file loaded by OrcaSlicer's
 embedded Python (>= 3.12); it imports `orca`, which only exists inside the app.
 
-- Syntax check: `python3 -m py_compile wave_overhang_spike_plugin.py`
+- Syntax check: `python3 -m py_compile wave_overhangs_plugin.py`
+- Generator smoke test (needs pyclipper and numpy; matplotlib for the picture):
+  `python3 tests/generator_smoke.py [out.png]`
 - Testing outside OrcaSlicer requires stubbing the `orca` module in `sys.modules` before loading
   the plugin file (`orca.slicing.SlicingPipelineCapabilityBase`, `Step`, `unscale`,
-  `orca.ExecutionResult`, `orca.plugin`, `orca.base`, `orca.register_capability`) and faking
-  the geometry objects. The G-code half (`_scan_gcode`, `_calibrate`, `_marker_block`,
-  `_post_process`) is pure Python on lists of lines and can be tested directly.
-- Real run: install the file through OrcaSlicer's Plugins dialog, select the capability as the
-  slicing pipeline plugin in the process settings, slice, export, and read the
-  `; WAVE_SPIKE ...` report lines at the top of the exported G-code.
+  `orca.ExecutionResult`, `orca.plugin`, `orca.base`, `orca.register_capability`, and
+  `orca.host.ExPolygon` for the slice cut) and faking the geometry objects. The generator
+  (`generate()` and the Clipper helpers) works on plain scaled-integer tuples and the G-code half
+  (`_scan_gcode`, `_calibrate`, `_wave_block`, `_post_process`) on lists of lines; both can be
+  tested directly.
+- Real run: install the file through OrcaSlicer's Plugins dialog (it installs pyclipper on load),
+  select the capability as the slicing pipeline plugin in the process settings, slice, export,
+  and read the `; WAVE_OVERHANGS ...` report lines at the top of the exported G-code.
 
 ## The upstream plugin API (what constrains the design)
 
@@ -87,7 +91,39 @@ Facts that shaped the approach:
    before support generation), then port the generator. Needed for a faithful version.
 3. **Stay a fork / upstream as a core feature.** Only route to full parity.
 
-## Spike architecture
+## Plugin architecture (`wave_overhangs_plugin.py`)
+
+- **`posSlice`**: for every layer and island, `generate()` (port of `WaveOverhangs::generate`)
+  grows wave fronts from the supported edge, with the lower layer grown by half a nozzle as the
+  fork passes it. All layers are generated from the uncut slices first; then each layer's cut
+  zone (the fork's wall-clip region + fill carve: overhang zone grown by 1.5 perimeter spacings /
+  1.25 widths, plus the painted area) is cut out of `region.slices` and `layer.make_slices()` is
+  called. The slicer then prints nothing there, and a bridge on the layer above (the floor).
+- **`posPerimeters`**: wall bounding boxes for the offset calibration (as in the spike).
+- **`psGCodePostProcess`**: the waves are inserted before the next layer-change tag of their
+  layer as `;TYPE:Overhang wall`, at the configured flow (mm³/mm), speed and fan, with retraction,
+  fan, E mode, feedrate and tags restored afterwards. Short hops between fronts (≤ the fork's
+  connector limit) travel without retracting.
+
+Porting notes (things that are easy to get wrong):
+
+- Orca's offsets use a patched Clipper that drops input vertices closer than
+  `0.005 × |delta|` (`ShortestEdgeLength`). pyclipper lacks it; `_strip_short_edges` reproduces
+  it. Without it every round offset at least doubles the vertex count (minutes per layer).
+- `jtRound` with limit 0 means Clipper's default arc tolerance, as in Orca.
+- Seeds: `Algorithm::wave_seeds` = contour of the anchoring, each contour expanded on its own with
+  `jtSquare` (holes by the negated amount), clipped to the wave area. The fork's fallback (the
+  area's own boundary inside the expanded anchoring) lies on the clip edge and degenerates to
+  a point, so it must stay a fallback.
+- `overhang_flow` is approximated from config (`thick_bridges`, `bridge_flow`,
+  `inner_wall_line_width`); it only sets anchor/seed distances.
+
+Differences from the fork (v0.1.0): no outer wall kept over the overhang
+(`wave_overhang_outer_perimeters` = 0); every overhang is waved (bridge detector not available
+to plugins); waves printed at the end of the layer; no floor-layer, Hilbert, temperature or
+min-time features; top-layer overhangs skipped; one object, one instance.
+
+## Spike architecture (`wave_overhang_spike_plugin.py`)
 
 `wave_overhang_spike_plugin.py` has two halves joined by a hand-over store:
 

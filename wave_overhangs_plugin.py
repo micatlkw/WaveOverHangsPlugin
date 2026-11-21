@@ -1,0 +1,1535 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["pyclipper", "numpy"]
+#
+# [tool.orcaslicer.plugin]
+# name = "Wave Overhangs"
+# description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
+# author = "WaveOverHangsPlugin"
+# version = "0.1.0"
+# type = "slicing-pipeline"
+# ///
+"""Wave Overhangs -- slicing-pipeline plugin.
+
+Wave overhangs algorithm: Janis A. Andersons (andersonsjanis).
+Builds on the arc-overhang algorithm by Steven McCulloch (stmcculloch).
+PrusaSlicer integration: Steven McCulloch.
+Port to OrcaSlicer: Dennis Klappe (dennisklappe).
+Python plugin port: WaveOverHangsPlugin.
+
+Released under the terms of the AGPLv3 or higher (see LICENSE).
+
+The generator below is a port of src/libslic3r/WaveOverhangs/WaveOverhangs.cpp of
+https://github.com/dennisklappe/OrcaSlicer-WaveOverhangs, using pyclipper (Clipper 6,
+the library the original calls) on the same scaled integer coordinates.
+
+How it works
+------------
+* Step.posSlice (per object): for every layer and island, the generator grows wave
+  fronts from the supported edge over the unsupported area (rings of round
+  offsets, clipped to the overhang). Every layer is computed from the slices as
+  sliced, then the area the waves take over is cut out of the layer's slices.
+  The slicer therefore prints no walls or infill there, and treats the layer
+  above as hanging over air, so it prints a bridge floor on top of the waves.
+* Step.posPerimeters (per object): a bounding box of each layer's walls is kept
+  to measure the object -> plate offset later (it is not exposed to plugins).
+* Step.psGCodePostProcess: the G-code is scanned per layer, the offset measured,
+  and the waves of each layer are inserted before the next layer change, at the
+  wave speed / flow / fan settings, restoring the slicer's state afterwards.
+
+Differences from the fork (first version)
+-----------------------------------------
+* No normal outer wall is kept over the overhang (wave_overhang_outer_perimeters = 0):
+  the waves run to the edge.
+* Every overhang gets waves (wave_overhangs_instead_of_bridges = on); the fork's
+  bridgeability test needs the slicer's bridge detector, which plugins cannot call.
+* Seeds use the generator's own fallback (boundary of the wave area inside the
+  expanded anchors) instead of the Z-tracking Clipper variant.
+* Waves are printed at the end of their layer, not before that island's walls.
+* Floor layers, Hilbert floors, per-wave temperature and minimum wave/layer times
+  are not implemented; the bridge the slicer prints above is the floor.
+* Overhangs on the top layer get no waves (no following layer-change tag to
+  anchor the insertion on). One object, one instance, no by-object printing.
+
+A report is written as "; WAVE_OVERHANGS ..." comment lines after the first line
+of the exported G-code.
+"""
+import json
+import math
+
+import numpy as np
+import orca
+import pyclipper as pc
+
+_DEFAULTS = {
+    # Generator (names and defaults follow the fork's wave_overhang_* settings)
+    "line_spacing_mm":          0.35,   # distance between wave fronts
+    "perimeter_overlap_mm":     0.1,    # extend the wave area by this much
+    "minimum_wave_width_mm":    0.7,    # split the wave area at necks narrower than this
+    "min_new_area_mm2":         0.01,   # stop when a front adds less area than this
+    "min_length_mm":            0.0,    # skip overhangs whose contour is shorter
+    "max_iterations":           0,      # 0 = unlimited fronts per area
+    "pattern":                  "smart",  # "smart", "monotonic" or "zigzag"
+    "corner_taper_enable":      0,      # 1: denser fronts near sharp corners
+    "line_spacing_corner_mm":   0.18,
+    "corner_taper_distance_mm": 3.0,
+    "corner_angle_threshold":   90.0,
+    # Printing
+    "flow_mm3_per_mm":          0.15,   # extrusion of a wave line, independent of layer height
+    "print_speed_mm_s":         2.0,
+    "travel_speed_mm_s":        40.0,
+    "fan_speed_percent":        100,
+    # 0: measure and report only, change nothing (slices are left uncut too)
+    "enabled":                  1,
+}
+_PATTERNS = ("smart", "monotonic", "zigzag")
+
+_WALL_ROLES = ("Outer wall", "Inner wall", "Overhang wall")
+_TAG = "; WAVE_OVERHANGS"
+
+# Hand-over store, object id -> capture (plain values only). Kept at module level and
+# on the capability instance; the spike verified both survive until post-processing.
+_STATE = {}
+
+
+# ============================================================================
+# small helpers
+# ============================================================================
+
+def _params(self):
+    try:
+        src = json.loads(self.get_config())
+    except (AttributeError, TypeError, ValueError):
+        src = {}
+    if not isinstance(src, dict):
+        src = {}
+    out = {}
+    for key, default in _DEFAULTS.items():
+        if isinstance(default, str):
+            value = str(src.get(key, default)).strip().lower()
+            out[key] = value if value in _PATTERNS else default
+            continue
+        try:
+            out[key] = float(src[key])
+        except (KeyError, TypeError, ValueError):
+            out[key] = float(default)
+    return out
+
+
+def _first_float(value, default):
+    """First number of a serialized config value such as "0.4,0.4" or "1.75"."""
+    if value is None:
+        return default
+    try:
+        v = float(str(value).replace(";", ",").split(",")[0].strip().rstrip("%"))
+    except ValueError:
+        return default
+    return v if v > 0.0 else default
+
+
+def _width_mm(value, nozzle, auto):
+    """A line width setting: mm, % of the nozzle, or 0 for the slicer's automatic width."""
+    if value is None:
+        return auto
+    text = str(value).replace(";", ",").split(",")[0].strip()
+    try:
+        if text.endswith("%"):
+            v = float(text[:-1]) * nozzle / 100.0
+        else:
+            v = float(text)
+    except ValueError:
+        return auto
+    return v if v > 0.0 else auto
+
+
+def _truthy(value):
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _zkey(z):
+    return round(float(z), 3)
+
+
+def _median(values):
+    s = sorted(values)
+    n = len(s)
+    return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
+
+
+def _fmt(v):
+    s = "%.3f" % v
+    return s.rstrip("0").rstrip(".") if "." in s else s
+
+
+# ============================================================================
+# Clipper layer (scaled integer coordinates, Orca's ClipperUtils semantics)
+#
+# Polygons: flat list of closed paths, outer contours CCW and holes CW.
+# ExPolygon: (contour, [holes]).  Polylines: list of open paths.
+# ============================================================================
+
+JT_ROUND, JT_MITER, JT_SQUARE = pc.JT_ROUND, pc.JT_MITER, pc.JT_SQUARE
+
+
+def _valid(paths, closed=True):
+    need = 3 if closed else 2
+    return [p for p in paths if len(p) >= need]
+
+
+_SHORTEST_EDGE_FACTOR = 0.005  # Orca's ClipperOffsetShortestEdgeFactor
+
+
+def _strip_short_edges(path, min_len, closed):
+    """Orca's patched ClipperOffset::AddPath: drop vertices closer than min_len to the last
+    kept one (and, for closed paths, trailing vertices close to the first). Without this,
+    every round-join offset at least doubles the vertex count of the previous result."""
+    if min_len <= 0 or len(path) < 2:
+        return path
+    lim2 = min_len * min_len
+    x0, y0 = path[0]
+    high = len(path) - 1
+    if closed:
+        while high > 0 and (path[high][0] - x0) ** 2 + (path[high][1] - y0) ** 2 < lim2:
+            high -= 1
+    out = [path[0]]
+    lx, ly = x0, y0
+    for i in range(1, high + 1):
+        x, y = path[i]
+        if (x - lx) ** 2 + (y - ly) ** 2 < lim2:
+            continue
+        out.append(path[i])
+        lx, ly = x, y
+    return out
+
+
+def offset(paths, delta, join=JT_MITER, limit=3.0, end=pc.ET_CLOSEDPOLYGON):
+    """Orca offset()/expand()/shrink(). Defaults are Orca's (jtMiter, miter limit 3)."""
+    closed = end == pc.ET_CLOSEDPOLYGON
+    min_len = abs(delta) * _SHORTEST_EDGE_FACTOR
+    paths = _valid([_strip_short_edges(p, min_len, closed) for p in paths], closed)
+    if not paths:
+        return []
+    co = pc.PyclipperOffset()
+    if join == JT_ROUND:
+        co.ArcTolerance = limit  # 0 -> Clipper's default tolerance, as in Orca
+    else:
+        co.MiterLimit = limit
+    try:
+        co.AddPaths(paths, join, end)
+    except pc.ClipperException:
+        return []
+    return co.Execute(float(delta))
+
+
+def expand(paths, delta, join=JT_MITER, limit=3.0):
+    return offset(paths, abs(delta), join, limit)
+
+
+def shrink(paths, delta, join=JT_MITER, limit=3.0):
+    return offset(paths, -abs(delta), join, limit)
+
+
+def offset_pl(polylines, delta, join=JT_ROUND, limit=0.0):
+    """Orca offset(Polylines, ..., etOpenRound)."""
+    return offset(polylines, delta, join, limit, pc.ET_OPENROUND)
+
+
+def _boolean(op, subject, clip, tree=False):
+    subject = _valid(subject)
+    clip = _valid(clip)
+    if not subject:
+        return []
+    c = pc.Pyclipper()
+    try:
+        c.AddPaths(subject, pc.PT_SUBJECT, True)
+    except pc.ClipperException:
+        return []
+    if clip:
+        try:
+            c.AddPaths(clip, pc.PT_CLIP, True)
+        except pc.ClipperException:
+            pass
+    if tree:
+        return _tree_to_expolys(c.Execute2(op, pc.PFT_NONZERO, pc.PFT_NONZERO))
+    return c.Execute(op, pc.PFT_NONZERO, pc.PFT_NONZERO)
+
+
+def union(paths):
+    return _boolean(pc.CT_UNION, paths, [])
+
+
+def union_ex(paths):
+    return _boolean(pc.CT_UNION, paths, [], tree=True)
+
+
+def diff(a, b):
+    return _boolean(pc.CT_DIFFERENCE, a, b) if b else union(a)
+
+
+def diff_ex(a, b):
+    return _boolean(pc.CT_DIFFERENCE, a, b, tree=True)
+
+
+def intersection(a, b):
+    return _boolean(pc.CT_INTERSECTION, a, b) if b else []
+
+
+def intersection_pl(polylines, clip):
+    """Clip open polylines by closed polygons (Orca intersection_pl)."""
+    polylines = _valid(polylines, closed=False)
+    clip = _valid(clip)
+    if not polylines or not clip:
+        return []
+    c = pc.Pyclipper()
+    added = False
+    for pl in polylines:
+        try:
+            c.AddPath(pl, pc.PT_SUBJECT, False)
+            added = True
+        except pc.ClipperException:
+            pass
+    if not added:
+        return []
+    try:
+        c.AddPaths(clip, pc.PT_CLIP, True)
+    except pc.ClipperException:
+        return []
+    return [list(map(tuple, p)) for p in
+            pc.OpenPathsFromPolyTree(c.Execute2(pc.CT_INTERSECTION, pc.PFT_NONZERO, pc.PFT_NONZERO))]
+
+
+def _tree_to_expolys(tree):
+    out = []
+
+    def walk(node):
+        for outer in node.Childs:
+            out.append((outer.Contour, [h.Contour for h in outer.Childs]))
+            for hole in outer.Childs:
+                walk(hole)
+    walk(tree)
+    return out
+
+
+def to_polygons(expolys):
+    out = []
+    for contour, holes in expolys:
+        out.append(contour)
+        out.extend(holes)
+    return out
+
+
+def to_polylines(polygons):
+    return [list(p) + [p[0]] for p in polygons if len(p) >= 2]
+
+
+def area(polygons):
+    return sum(pc.Area(p) for p in polygons)
+
+
+def opening_ex(expolys, delta, join=JT_MITER, limit=3.0):
+    return union_ex(offset(offset(to_polygons(expolys), -delta, join, limit), delta, join, limit))
+
+
+def closing_ex(polygons, delta, join=JT_MITER, limit=3.0):
+    return union_ex(offset(offset(polygons, delta, join, limit), -delta, join, limit))
+
+
+def offset_ex(expolys, delta, join=JT_MITER, limit=3.0):
+    return union_ex(offset(to_polygons(expolys), delta, join, limit))
+
+
+def polyline_length(pl):
+    return sum(math.dist(pl[i - 1], pl[i]) for i in range(1, len(pl)))
+
+
+def contour_length(poly):
+    return polyline_length(list(poly) + [poly[0]]) if len(poly) >= 2 else 0.0
+
+
+def expoly_contains(expoly, pt):
+    contour, holes = expoly
+    if pc.PointInPolygon(pt, contour) != 1:
+        return False
+    return not any(pc.PointInPolygon(pt, h) == 1 for h in holes)
+
+
+def _segments(polys):
+    """(starts, deltas) of the closed boundary segments of polygons, as float arrays."""
+    a, b = [], []
+    for p in polys:
+        if len(p) < 2:
+            continue
+        arr = np.asarray(p, dtype=float)
+        a.append(arr)
+        b.append(np.roll(arr, -1, axis=0))
+    if not a:
+        return np.zeros((0, 2)), np.zeros((0, 2))
+    a = np.concatenate(a)
+    return a, np.concatenate(b) - a
+
+
+def _project_points(points, seg_a, seg_d):
+    """Closest boundary point (projection) for each of `points` -> (proj (n,2), dist2 (n,))."""
+    p = np.asarray(points, dtype=float)
+    l2 = (seg_d * seg_d).sum(axis=1)
+    l2s = np.where(l2 > 0, l2, 1.0)
+    # (n, m)
+    rel_x = p[:, None, 0] - seg_a[None, :, 0]
+    rel_y = p[:, None, 1] - seg_a[None, :, 1]
+    t = np.clip((rel_x * seg_d[None, :, 0] + rel_y * seg_d[None, :, 1]) / l2s[None, :], 0.0, 1.0)
+    t = np.where(l2[None, :] > 0, t, 0.0)
+    fx = seg_a[None, :, 0] + t * seg_d[None, :, 0]
+    fy = seg_a[None, :, 1] + t * seg_d[None, :, 1]
+    d2 = (fx - p[:, None, 0]) ** 2 + (fy - p[:, None, 1]) ** 2
+    j = d2.argmin(axis=1)
+    rows = np.arange(len(p))
+    return np.stack([fx[rows, j], fy[rows, j]], axis=1), d2[rows, j]
+
+
+def douglas_peucker(pts, tol):
+    """Orca Polyline::simplify (Douglas-Peucker against segments)."""
+    n = len(pts)
+    if n < 3 or tol <= 0:
+        return list(pts)
+    arr = np.asarray(pts, dtype=float)
+    keep = np.zeros(n, dtype=bool)
+    keep[0] = keep[-1] = True
+    tol2 = tol * tol
+    stack = [(0, n - 1)]
+    while stack:
+        i0, i1 = stack.pop()
+        if i1 - i0 < 2:
+            continue
+        a = arr[i0]
+        d = arr[i1] - a
+        seg = arr[i0 + 1:i1] - a
+        l2 = float(d @ d)
+        if l2 > 0:
+            t = np.clip(seg @ d / l2, 0.0, 1.0)
+            dist2 = ((seg - t[:, None] * d) ** 2).sum(axis=1)
+        else:
+            dist2 = (seg * seg).sum(axis=1)
+        k = int(dist2.argmax())
+        if dist2[k] > tol2:
+            idx = i0 + 1 + k
+            keep[idx] = True
+            stack.append((i0, idx))
+            stack.append((idx, i1))
+    return [pts[i] for i in range(n) if keep[i]]
+
+
+# ============================================================================
+# The generator (port of WaveOverhangs.cpp)
+# ============================================================================
+
+def painted_overhang_zone(island, lower, filled_area, sliver_radius):
+    """Geometric overhang of an island (island - lower), restricted to the connected
+    pieces the wave painted; thin slivers are cut back near the piece's body."""
+    zone = []
+    painted = to_polygons(union_ex(filled_area))
+    for piece in union_ex(diff(island, lower)):
+        piece_polys = to_polygons([piece])
+        if not intersection(piece_polys, painted):
+            continue
+        if sliver_radius > 0:
+            body = opening_ex([piece], sliver_radius)
+            if body:
+                zone += intersection(piece_polys, expand(to_polygons(body), 2 * sliver_radius, JT_ROUND, 0.0))
+                continue
+        zone += piece_polys
+    return zone
+
+
+def reconnect_polylines(polylines, limit_distance):
+    """Greedily chain polylines whose end points are closer than limit_distance."""
+    chains = [list(p) for p in polylines]
+    alive = [len(c) > 0 for c in chains]
+    limit_sq = float(limit_distance) * float(limit_distance)
+
+    def close(p1, p2):
+        return (p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2 < limit_sq
+
+    changed = True
+    while changed:
+        changed = False
+        for a in range(len(chains)):
+            if not alive[a]:
+                continue
+            for b in range(a + 1, len(chains)):
+                if not alive[b]:
+                    continue
+                base, nxt = chains[a], chains[b]
+                if close(base[-1], nxt[0]):
+                    base.extend(nxt)
+                elif close(base[-1], nxt[-1]):
+                    base.extend(reversed(nxt))
+                elif close(base[0], nxt[-1]):
+                    chains[a] = nxt + base
+                elif close(base[0], nxt[0]):
+                    chains[a] = list(reversed(nxt)) + base
+                else:
+                    continue
+                alive[b] = False
+                changed = True
+    return [chains[i] for i in range(len(chains)) if alive[i]]
+
+
+def detect_overhang_corners(polys, angle_threshold_rad):
+    corners = []
+    for poly in polys:
+        n = len(poly)
+        if n < 3:
+            continue
+        is_ccw = pc.Orientation(poly)
+        for i in range(n):
+            ax, ay = poly[(i + n - 1) % n]
+            bx, by = poly[i]
+            cx, cy = poly[(i + 1) % n]
+            v1 = (bx - ax, by - ay)
+            v2 = (cx - bx, cy - by)
+            if v1[0] ** 2 + v1[1] ** 2 < 1 or v2[0] ** 2 + v2[1] ** 2 < 1:
+                continue
+            turn = math.atan2(v1[0] * v2[1] - v1[1] * v2[0], v1[0] * v2[0] + v1[1] * v2[1])
+            convex = turn > 0 if is_ccw else turn < 0
+            if convex and math.pi - abs(turn) < angle_threshold_rad:
+                corners.append((bx, by))
+    return corners
+
+
+def build_corner_influence(corners, radius):
+    if not corners or radius <= 0:
+        return []
+    disks = []
+    for cx, cy in corners:
+        disks.append([(cx + int(math.cos(2 * math.pi * k / 16) * radius),
+                       cy + int(math.sin(2 * math.pi * k / 16) * radius)) for k in range(16)])
+    return union(disks)
+
+
+def _find_closest_boundary_pair(a, b, container):
+    """Closest pair of boundary points between expolygons a and b whose midpoint lies in
+    `container`. Returns (pa, pb, dist2) or None."""
+    best = None
+    for src, other, src_is_a in ((a, b, True), (b, a, False)):
+        pts = to_polygons([src])
+        pts = [pt for poly in pts for pt in poly]
+        if not pts:
+            continue
+        seg_a, seg_d = _segments(to_polygons([other]))
+        if len(seg_a) == 0:
+            continue
+        proj, d2 = _project_points(pts, seg_a, seg_d)
+        for i in np.argsort(d2, kind="stable"):
+            if best is not None and d2[i] >= best[2]:
+                break
+            s = pts[i]
+            q = (int(proj[i][0]), int(proj[i][1]))
+            mid = (int(0.5 * (s[0] + q[0])), int(0.5 * (s[1] + q[1])))
+            if not expoly_contains(container, mid):
+                continue
+            best = (s, q, float(d2[i])) if src_is_a else (q, s, float(d2[i]))
+            break
+    return best
+
+
+def _make_split_slit(a, b, extension, half_width):
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length = math.hypot(dx, dy)
+    if length <= 0:
+        return []
+    ux, uy = dx / length, dy / length
+    nx, ny = -uy, ux
+    sx, sy = a[0] - ux * extension, a[1] - uy * extension
+    ex, ey = b[0] + ux * extension, b[1] + uy * extension
+    ox, oy = nx * max(1, half_width), ny * max(1, half_width)
+    return [(int(sx + ox), int(sy + oy)), (int(ex + ox), int(ey + oy)),
+            (int(ex - ox), int(ey - oy)), (int(sx - ox), int(sy - oy))]
+
+
+def _slit_changes_topology(wave_cover, slit):
+    if len(slit) < 3:
+        return False
+    result = union_ex(to_polygons(diff_ex(to_polygons([wave_cover]), [slit])))
+    return len(result) != 1 or sum(len(h) for _, h in result) != len(wave_cover[1])
+
+
+def _make_effective_split_slit(wave_cover, a, b, extension, wave_spacing):
+    half_width = wave_spacing // 2 + 1
+    for _ in range(6):
+        slit = _make_split_slit(a, b, extension, half_width)
+        if _slit_changes_topology(wave_cover, slit):
+            return slit
+        half_width = max(half_width + 1, half_width * 2)
+    return []
+
+
+def generate_narrow_split_slits(wave_cover, wave_spacing, minimum_wave_width):
+    if minimum_wave_width <= 0:
+        return []
+    max_gap_sq = float(minimum_wave_width) ** 2
+    slit_half_width = max(1, wave_spacing // 20)
+    slit_extension = max(slit_half_width, minimum_wave_width)
+    duplicate_radius_sq = (0.5 * wave_spacing) ** 2
+    original_holes = len(wave_cover[1])
+    candidates = []
+
+    def add(pair):
+        if pair is None or pair[2] > max_gap_sq:
+            return
+        slit = _make_effective_split_slit(wave_cover, pair[0], pair[1], wave_spacing + slit_extension, wave_spacing)
+        if len(slit) < 3:
+            return
+        mid = (0.5 * (pair[0][0] + pair[1][0]), 0.5 * (pair[0][1] + pair[1][1]))
+        candidates.append((pair[2], mid, slit))
+
+    for fraction in (0.25, 0.5, 0.75, 1.0):
+        depth = max(1, int(round(fraction * wave_spacing)))
+        comps = offset_ex([wave_cover], -depth, JT_ROUND, 0.0)
+        count_changed = len(comps) > 1
+        holes_changed = sum(len(h) for _, h in comps) != original_holes
+        if not count_changed and not holes_changed:
+            continue
+        if count_changed:
+            for i in range(len(comps)):
+                for j in range(i + 1, len(comps)):
+                    add(_find_closest_boundary_pair(comps[i], comps[j], wave_cover))
+        if holes_changed and wave_cover[1]:
+            outer = (wave_cover[0], [])
+            holes = wave_cover[1]
+            for hi in range(len(holes)):
+                hole = (holes[hi], [])
+                add(_find_closest_boundary_pair(outer, hole, wave_cover))
+                for hj in range(hi + 1, len(holes)):
+                    add(_find_closest_boundary_pair(hole, (holes[hj], []), wave_cover))
+
+    if not candidates:
+        return []
+    candidates.sort(key=lambda c: c[0])
+    slits, kept = [], []
+    for _, mid, slit in candidates:
+        if any((mid[0] - m[0]) ** 2 + (mid[1] - m[1]) ** 2 <= duplicate_radius_sq for m in kept):
+            continue
+        kept.append(mid)
+        slits.append(slit)
+    return union(slits) if slits else []
+
+
+def generate_wave_overhang_seeds(boundary, anchoring, seed_expansion):
+    """Seed polylines: the contour of the anchoring, expanded by seed_expansion, where it
+    runs inside the wave area. This is what Algorithm::wave_seeds() returns (it only adds
+    Z-tracking to know which source/boundary each piece came from, which a single
+    boundary does not need). The fork's fallback (the area's boundary inside the expanded
+    anchoring) is used only if this finds nothing, as in the original."""
+    if not anchoring:
+        return []
+    boundary_polys = to_polygons([boundary])
+    # expolygons_to_zpaths_expanded_opened(): each contour on its own, jtSquare, holes by
+    # the negated amount (so the solid grows), results not merged.
+    expanded = []
+    for contour, holes in union_ex(anchoring):
+        expanded += offset([contour], seed_expansion, JT_SQUARE, 0.0)
+        for hole in holes:
+            expanded += offset([hole], -seed_expansion, JT_SQUARE, 0.0)
+    seeds = intersection_pl(to_polylines(expanded), boundary_polys)
+    if not seeds:
+        seeds = intersection_pl(to_polylines(boundary_polys), offset(anchoring, seed_expansion, JT_ROUND, 0.0))
+    return seeds
+
+
+class _SupportIndex:
+    """Segments of the wave paths laid so far, for the "smart" direction choice."""
+
+    def __init__(self):
+        self.a = np.zeros((0, 2))
+        self.d = np.zeros((0, 2))
+        self.owner = np.zeros(0, dtype=np.int64)
+        self.count = 0
+
+    def add(self, polyline):
+        arr = np.asarray(polyline, dtype=float)
+        if len(arr) < 2:
+            return
+        self.a = np.concatenate([self.a, arr[:-1]])
+        self.d = np.concatenate([self.d, arr[1:] - arr[:-1]])
+        self.owner = np.concatenate([self.owner, np.full(len(arr) - 1, self.count, dtype=np.int64)])
+        self.count += 1
+
+    def score(self, candidate, support_reach, prefix_length):
+        if self.count == 0 or len(candidate) < 2:
+            return -1.0
+        cand_len = polyline_length(candidate)
+        if cand_len <= 0:
+            return -1.0
+        sample_len = min(cand_len, float(max(1, prefix_length)))
+        l2 = (self.d * self.d).sum(axis=1)
+        l2s = np.where(l2 > 0, l2, 1.0)
+        starts = np.flatnonzero(np.r_[True, self.owner[1:] != self.owner[:-1]])
+        total = np.zeros(len(starts))
+        for dist_along, weight in ((0.0, 3.0), (0.5 * sample_len, 2.0), (sample_len, 1.0)):
+            s = np.asarray(_point_at_distance(candidate, dist_along), dtype=float)
+            rel = s - self.a
+            t = np.clip((rel * self.d).sum(axis=1) / l2s, 0.0, 1.0)
+            t = np.where(l2 > 0, t, 0.0)
+            foot = self.a + t[:, None] * self.d
+            d2 = ((foot - s) ** 2).sum(axis=1)
+            mins = np.minimum.reduceat(d2, starts)
+            is_min = d2 == np.repeat(mins, np.diff(np.r_[starts, len(d2)]))
+            idx = np.flatnonzero(is_min)
+            _, first = np.unique(self.owner[idx], return_index=True)
+            best = idx[first]  # first closest segment per path, as foot_pt does
+            foot_r = np.round(foot[best])
+            a = np.round(self.a[best])
+            b = np.round(self.a[best] + self.d[best])
+            interior = ~(np.all(foot_r == a, axis=1) | np.all(foot_r == b, axis=1))
+            dist = np.sqrt(mins)
+            normalized = np.maximum(0.0, 1.0 - dist / float(max(1, support_reach)))
+            total += weight * (3.0 * normalized + np.where(interior, 1.5, 0.2))
+        return float(total.max())
+
+
+def _point_at_distance(line, distance):
+    if not line:
+        return (0, 0)
+    if distance <= 0 or len(line) == 1:
+        return line[0]
+    walked = 0.0
+    for i in range(1, len(line)):
+        ax, ay = line[i - 1]
+        bx, by = line[i]
+        seg = math.hypot(bx - ax, by - ay)
+        if seg <= 0:
+            continue
+        if walked + seg >= distance:
+            t = (distance - walked) / seg
+            return (int(ax + t * (bx - ax)), int(ay + t * (by - ay)))
+        walked += seg
+    return line[-1]
+
+
+def append_wave_fronts(out, fronts, wave_width, connector_limit, pattern):
+    """"smart" / "monotonic" ordering (append_wave_fronts)."""
+    if not fronts:
+        return
+    if pattern == "monotonic":
+        out.extend(list(f) for f in fronts if len(f) >= 2)
+        return
+    support = _SupportIndex()
+    for path in out:
+        support.add(path)
+    reach = max(wave_width, connector_limit)
+    prefix = max(wave_width, connector_limit // 2)
+    for source in fronts:
+        front = list(source)
+        if len(front) < 2:
+            continue
+        reverse = front[::-1]
+        if support.score(reverse, reach, prefix) > support.score(front, reach, prefix):
+            front = reverse
+        out.append(front)
+        support.add(front)
+
+
+def append_zig_zag_front_levels(out, levels, connector_limit):
+    if not levels:
+        return
+    used = [[False] * len(level) for level in levels]
+    max_d2 = float(connector_limit) ** 2
+
+    def d2(p, q):
+        return float(p[0] - q[0]) ** 2 + float(p[1] - q[1]) ** 2
+
+    def append_or_start(front):
+        if not out:
+            out.append(front)
+            return
+        cur = out[-1]
+        d_keep, d_flip = d2(cur[-1], front[0]), d2(cur[-1], front[-1])
+        if min(d_keep, d_flip) > max_d2:
+            out.append(front)
+            return
+        if d_flip < d_keep:
+            front = front[::-1]
+        if tuple(cur[-1]) == tuple(front[0]):
+            cur.extend(front[1:])
+        else:
+            cur.extend(front)
+
+    for li in range(len(levels)):
+        for fi in range(len(levels[li])):
+            if used[li][fi]:
+                continue
+            # follow_branch, iteratively
+            level_idx, front_idx, rev = li, fi, False
+            while True:
+                used[level_idx][front_idx] = True
+                cur = list(levels[level_idx][front_idx])
+                if len(cur) < 2:
+                    break
+                if rev:
+                    cur.reverse()
+                append_or_start(cur)
+                nxt = None
+                for next_level in range(level_idx + 1, len(levels)):
+                    best_idx, best_rev, best_d = -1, False, max_d2
+                    anchor = out[-1][-1]
+                    for ci, cand in enumerate(levels[next_level]):
+                        if used[next_level][ci] or len(cand) < 2:
+                            continue
+                        dk = d2(anchor, cand[0])
+                        if dk <= best_d:
+                            best_d, best_idx, best_rev = dk, ci, False
+                        df = d2(anchor, cand[-1])
+                        if df <= best_d:
+                            best_d, best_idx, best_rev = df, ci, True
+                    if best_idx < 0 or best_d > max_d2:
+                        break
+                    nxt = (next_level, best_idx, best_rev)
+                    break
+                if nxt is None:
+                    break
+                level_idx, front_idx, rev = nxt
+
+
+def generate(infill_area, lower, P):
+    """Port of WaveOverhangs::generate(). `infill_area` is a list of ExPolygons, `lower` the
+    lower layer's polygons (grown by half a nozzle, as the fork passes them). All values in
+    P are scaled units except where noted. Returns (paths per overhang region, residual)."""
+    if not infill_area:
+        return [], []
+    base_spacing = P["base_spacing"]
+    wave_width = P["wave_width"]
+    perimeter_overlap = max(0, P["perimeter_overlap"])
+    wave_spacing = max(1, P["wave_spacing"] or base_spacing)
+    min_wave_width = max(0, P["minimum_wave_width"])
+
+    taper_corner = P["wave_spacing_corner"]
+    taper_enabled = P["corner_taper_enable"] and 0 < taper_corner < wave_spacing and P["corner_taper_distance"] > 0
+    taper_substeps = min(8, max(2, int(round(wave_spacing / taper_corner)))) if taper_enabled else 1
+    taper_step = max(taper_corner, wave_spacing // taper_substeps) if taper_enabled else wave_spacing
+    corner_angle = max(10.0, min(179.0, P["corner_angle_threshold"])) * math.pi / 180.0
+
+    anchors_size = min(P["external_infill_margin"], base_spacing * (P["perimeter_count"] + 1))
+    seed_expansion = max(1, base_spacing // 10)
+    regularization = max(1, base_spacing // 2)
+    connector_limit = max(wave_spacing, wave_width) + perimeter_overlap
+    min_area_growth = P["min_new_area"] if P["min_new_area"] > 0 else 0.05 * wave_spacing * wave_spacing
+    simplify_tol = min(0.05 * wave_spacing, P["scaled_resolution"])
+
+    infill_polys = to_polygons(infill_area)
+    overhangs = diff(infill_polys, lower)
+    if not overhangs:
+        return [], []
+    anchors = intersection(infill_polys, lower)
+    inset_anchors = diff(anchors, offset(overhangs, anchors_size + 0.1 * P["overhang_width"], JT_SQUARE, 0.0))
+    inset_overhang_area = diff(infill_polys, inset_anchors)
+
+    wave_paths = []
+    filled_area = []
+    for overhang in union_ex(inset_overhang_area):
+        if P["min_length"] > 0 and contour_length(overhang[0]) < P["min_length"]:
+            continue
+        to_cover = to_polygons([overhang])
+        wave_cover_area = expand(to_cover, perimeter_overlap, JT_ROUND, 0.0) if perimeter_overlap > 0 else to_cover
+
+        corner_influence = []
+        if taper_enabled:
+            corners = detect_overhang_corners(to_cover, corner_angle)
+            if corners:
+                corner_influence = build_corner_influence(corners, P["corner_taper_distance"])
+        if not intersection(wave_cover_area, overhangs):
+            wave_cover_area = []
+        # Bridgeable spans are waved too (use_instead_of_bridges): see the module docstring.
+
+        region_paths = []
+        filled_region = []
+        for wave_cover in union_ex(wave_cover_area):
+            split_covers = [wave_cover]
+            slits = generate_narrow_split_slits(wave_cover, wave_spacing, min_wave_width)
+            if slits:
+                split_covers = union_ex(to_polygons(diff_ex(to_polygons([wave_cover]), slits)))
+
+            full_cover = to_polygons([wave_cover])
+            grown = expand(full_cover, 1.1 * base_spacing, JT_ROUND, 0.0)
+            anchoring = (intersection(grown, inset_anchors) or intersection(grown, anchors)
+                         or intersection(grown, lower))
+            base_seeds = generate_wave_overhang_seeds(wave_cover, anchoring, seed_expansion)
+
+            for split in split_covers:
+                cover = to_polygons([split])
+                seeds = intersection_pl(base_seeds, cover) if base_seeds else []
+                if not seeds:
+                    continue
+                trim = (shrink(cover, max(1, wave_width // 2), JT_ROUND, 0.0)
+                        or shrink(cover, 0.1 * base_spacing) or cover)
+                accumulated = intersection(offset_pl(seeds, seed_expansion), cover)
+                if not accumulated:
+                    continue
+
+                levels = []
+                acc_area = area(accumulated)
+                iteration = 0
+                taper_active = taper_enabled and corner_influence and intersection(corner_influence, cover)
+                while True:
+                    if P["max_iterations"] > 0 and iteration >= P["max_iterations"]:
+                        break
+                    iteration += 1
+                    if taper_active:
+                        for sub in range(1, taper_substeps):
+                            sub_region = intersection(expand(accumulated, sub * taper_step, JT_ROUND, 0.0), cover)
+                            if not sub_region:
+                                continue
+                            sub_fronts = intersection_pl(to_polylines(sub_region), trim)
+                            sub_fronts = intersection_pl(sub_fronts, corner_influence)
+                            sub_fronts = [douglas_peucker(f, min(0.05 * taper_step, P["scaled_resolution"]))
+                                          for f in sub_fronts]
+                            sub_fronts = reconnect_polylines([f for f in sub_fronts if len(f) >= 2], taper_step)
+                            if sub_fronts:
+                                levels.append(sub_fronts)
+
+                    next_region = intersection(expand(accumulated, wave_spacing, JT_ROUND, 0.0), cover)
+                    if not next_region:
+                        break
+                    next_area = area(next_region)
+                    if next_area <= acc_area + min_area_growth:
+                        break
+                    fronts = intersection_pl(to_polylines(next_region), trim)
+                    fronts = [douglas_peucker(f, simplify_tol) for f in fronts]
+                    fronts = reconnect_polylines([f for f in fronts if len(f) >= 2], wave_spacing)
+                    if fronts:
+                        levels.append(fronts)
+                    accumulated = next_region
+                    acc_area = next_area
+
+                if levels:
+                    split_paths = []
+                    if P["pattern"] == "zigzag":
+                        append_zig_zag_front_levels(split_paths, levels, connector_limit)
+                    else:
+                        append_wave_fronts(split_paths, [f for level in levels for f in level],
+                                           wave_width, connector_limit, P["pattern"])
+                    if split_paths:
+                        region_paths += split_paths
+                        filled_region += accumulated
+
+        region_paths = [p for p in region_paths if len(p) >= 2]
+        filled_region = union(filled_region)
+        filled_area += filled_region
+        if region_paths:
+            wave_paths.append(region_paths)
+
+    residual = offset(to_polygons(closing_ex(filled_area, regularization, JT_ROUND, 0.0)), 10.0)
+    return wave_paths, residual
+
+
+# ============================================================================
+# slice time: generate waves, cut their area out of the slices
+# ============================================================================
+
+def _poly_from_host(poly):
+    try:
+        return [tuple(map(int, row)) for row in poly.as_array().tolist()]
+    except Exception:
+        return [(int(pt.x), int(pt.y)) for pt in poly.points]
+
+
+def _expoly_from_host(ex):
+    return (_poly_from_host(ex.contour), [_poly_from_host(h) for h in ex.holes])
+
+
+def _host_expoly(expoly):
+    contour, holes = expoly
+    return orca.host.ExPolygon(np.asarray(contour, dtype=np.int64),
+                               [np.asarray(h, dtype=np.int64) for h in holes])
+
+
+def _gen_params(ctx, p, k):
+    """Generator parameters in scaled units (k = mm per scaled unit)."""
+    def sc(mm):
+        return int(round(mm / k))
+    nozzle = _first_float(ctx.config_value("nozzle_diameter"), 0.4)
+    inner_w = _width_mm(ctx.config_value("inner_wall_line_width"), nozzle,
+                        _width_mm(ctx.config_value("line_width"), nozzle, 1.125 * nozzle))
+    thick = _truthy(ctx.config_value("thick_bridges"))
+    bridge_flow = _first_float(ctx.config_value("bridge_flow"), 1.0)
+    walls = int(_first_float(ctx.config_value("wall_loops"), 2))
+    return {
+        "nozzle_mm": nozzle,
+        "inner_width_mm": inner_w,
+        "thick_bridges": thick,
+        "bridge_dmr_mm": math.sqrt(bridge_flow) * nozzle,
+        "perimeter_count": max(1, walls),
+        "wave_width": sc(nozzle),  # the fork always uses the nozzle diameter
+        "wave_spacing": sc(p["line_spacing_mm"]) if p["line_spacing_mm"] > 0 else 0,
+        "perimeter_overlap": sc(p["perimeter_overlap_mm"]) if p["perimeter_overlap_mm"] > 0 else 0,
+        "minimum_wave_width": sc(p["minimum_wave_width_mm"]) if p["minimum_wave_width_mm"] > 0 else 0,
+        "min_new_area": p["min_new_area_mm2"] / (k * k) if p["min_new_area_mm2"] > 0 else 0.0,
+        "min_length": sc(p["min_length_mm"]) if p["min_length_mm"] > 0 else 0,
+        "max_iterations": int(p["max_iterations"]),
+        "pattern": p["pattern"],
+        "corner_taper_enable": p["corner_taper_enable"] != 0,
+        "wave_spacing_corner": sc(p["line_spacing_corner_mm"]) if p["line_spacing_corner_mm"] > 0 else 0,
+        "corner_taper_distance": sc(p["corner_taper_distance_mm"]) if p["corner_taper_distance_mm"] > 0 else 0,
+        "corner_angle_threshold": p["corner_angle_threshold"],
+        "external_infill_margin": sc(3.0),
+        "scaled_resolution": sc(_first_float(ctx.config_value("resolution"), 0.012)),
+    }
+
+
+def _layer_flow(G, height_mm, k):
+    """overhang_flow width/spacing and the perimeter spacing for one layer (scaled)."""
+    def sc(mm):
+        return int(round(mm / k))
+    perim_spacing = G["inner_width_mm"] - height_mm * (1.0 - 0.25 * math.pi)
+    if G["thick_bridges"]:
+        ov_w, ov_s = G["bridge_dmr_mm"], G["bridge_dmr_mm"] + 0.05
+    else:
+        ov_w, ov_s = G["inner_width_mm"], perim_spacing
+    return sc(ov_w), sc(ov_s), sc(perim_spacing)
+
+
+def _generate_object(ctx, p):
+    """Waves and cut zones for every layer of ctx.object, from the slices as they are now.
+
+    Returns (capture, cuts): capture holds plain values; cuts maps a layer index to the
+    scaled polygons to cut out of that layer's slices.
+    """
+    k = orca.slicing.unscale(1)
+    G = _gen_params(ctx, p, k)
+    half_nozzle = int(round(G["nozzle_mm"] * 0.5 / k))
+
+    layers = {}
+    cuts = {}
+    stats = {"wave_layers": 0, "regions": 0, "paths": 0, "length_mm": 0.0}
+    obj_layers = list(ctx.object.layers())
+    islands_of = [None] * len(obj_layers)
+    for idx, layer in enumerate(obj_layers):
+        if ctx.cancelled():
+            break
+        islands = [_expoly_from_host(ex) for ex in layer.lslices()]
+        islands_of[idx] = islands
+        entry = {"z": float(layer.print_z), "height": float(layer.height), "ref": None, "paths": []}
+        layers[_zkey(layer.print_z)] = entry
+        if idx == 0 or not islands:
+            continue
+        lower_raw = to_polygons(islands_of[idx - 1] or [])
+        lower = expand(lower_raw, half_nozzle) if lower_raw else []
+
+        ov_w, ov_s, perim_s = _layer_flow(G, float(layer.height), k)
+        P = dict(G, base_spacing=ov_s, overhang_width=ov_w)
+        layer_cut = []
+        for island in islands:
+            island_polys = to_polygons([island])
+            if not diff(island_polys, lower):
+                continue  # fully supported
+            regions, residual = generate([island], lower, P)
+            if not regions:
+                continue
+            zone = painted_overhang_zone(island_polys, lower_raw, residual, ov_w // 2)
+            clip_region = union(expand(zone, 1.5 * perim_s, JT_ROUND, 0.0) + residual)
+            fill_carve = (union(expand(zone, 1.25 * ov_w, JT_ROUND, 0.0) + expand(residual, ov_w // 2, JT_ROUND, 0.0))
+                          if zone else residual)
+            layer_cut += clip_region + fill_carve
+            for region in regions:
+                stats["regions"] += 1
+                for path in region:
+                    mm = [(x * k, y * k) for x, y in path]
+                    entry["paths"].append(mm)
+                    stats["paths"] += 1
+                    stats["length_mm"] += polyline_length(mm)
+        if entry["paths"]:
+            stats["wave_layers"] += 1
+        if layer_cut:
+            cuts[idx] = union(layer_cut)
+
+    instance_offset = None
+    try:
+        instance_offset = [tuple(inst.offset()) for inst in ctx.object.model_object().instances()]
+    except Exception:
+        pass
+    return {
+        "layers": layers,
+        "stats": stats,
+        "line_width": G["nozzle_mm"],
+        "instance_offset": instance_offset,
+        "cut_layers": 0,
+        "generated_at": "posSlice",
+    }, cuts
+
+
+def _cut_slices(ctx, cuts):
+    """Cut the wave areas out of every region's slices. Returns the number of layers cut."""
+    obj_layers = list(ctx.object.layers())
+    done = 0
+    for idx, polys in cuts.items():
+        cut = [_host_expoly(ex) for ex in union_ex(polys)]
+        if not cut:
+            continue
+        layer = obj_layers[idx]
+        for region in layer.regions():
+            by_type = {}
+            for surface in region.slices.surfaces:
+                pieces = [surface.expolygon]
+                for c in cut:
+                    pieces = [q for piece in pieces for q in piece.diff_ex(c)]
+                    if not pieces:
+                        break
+                if pieces:
+                    by_type.setdefault(surface.surface_type, []).extend(pieces)
+            region.slices.clear()
+            for surface_type, expolys in by_type.items():
+                region.slices.append(expolys, surface_type)
+        layer.make_slices()
+        done += 1
+    return done
+
+
+def _toolpath_bbox(layer, k):
+    """(min_x, min_y, max_x, max_y) in mm of the layer's wall toolpaths."""
+    box = None
+    for region in layer.regions():
+        for path in region.perimeters.flatten_paths():
+            if path.role not in _WALL_ROLES:
+                continue
+            pts = path.points()
+            if len(pts) == 0:
+                continue
+            lo = pts.min(axis=0)
+            hi = pts.max(axis=0)
+            b = (float(lo[0]), float(lo[1]), float(hi[0]), float(hi[1]))
+            box = b if box is None else (min(box[0], b[0]), min(box[1], b[1]), max(box[2], b[2]), max(box[3], b[3]))
+    return None if box is None else tuple(v * k for v in box)
+
+
+def _capture_refs(ctx, cap):
+    k = orca.slicing.unscale(1)
+    for layer in ctx.object.layers():
+        if ctx.cancelled():
+            break
+        entry = cap["layers"].get(_zkey(layer.print_z))
+        if entry is not None:
+            entry["ref"] = _toolpath_bbox(layer, k)
+
+
+# ============================================================================
+# G-code: parsing, calibration, injection
+# ============================================================================
+
+def _parse_words(code):
+    parts = code.split()
+    if not parts:
+        return "", {}
+    words = {}
+    for tok in parts[1:]:
+        try:
+            words[tok[0].upper()] = float(tok[1:])
+        except (ValueError, IndexError):
+            pass
+    return parts[0].upper(), words
+
+
+class _Stream:
+    """State of a G-code stream, advanced one line at a time.
+
+    "retracted": filament (mm) pulled back by G1 E moves (wipes included) and not yet
+    pushed back; "fw_retracted": between G10 and G11; "fan": last part-fan value (0-255)
+    or None if not set yet.
+    """
+    _FIELDS = ("x", "y", "e", "f", "e_relative", "retracted", "fw_retracted", "fan",
+               "feature", "feature_line", "width_line", "height_line")
+
+    def __init__(self, e_relative, bbl=False, state=None):
+        self.x = self.y = None
+        self.e = 0.0
+        self.f = None
+        self.e_relative = e_relative
+        self.retracted = 0.0
+        self.fw_retracted = False
+        self.fan = None
+        self.feature = None
+        self.feature_line = self.width_line = self.height_line = None
+        self.fan_index = 1 if bbl else 0
+        if state:
+            for name in self._FIELDS:
+                if name in state:
+                    setattr(self, name, state[name])
+
+    def snapshot(self):
+        return {name: getattr(self, name) for name in self._FIELDS}
+
+    def feed(self, raw):
+        line = raw.strip()
+        if not line:
+            return None
+        if line[0] == ";":
+            body = line[1:]
+            if body.startswith(" FEATURE: ") or body.startswith("TYPE:"):
+                self.feature = body.split(":", 1)[1].strip()
+                self.feature_line = raw
+            elif body.startswith(" LINE_WIDTH: ") or body.startswith("WIDTH:"):
+                self.width_line = raw
+            elif body.startswith(" LAYER_HEIGHT: ") or body.startswith("HEIGHT:"):
+                self.height_line = raw
+            return None
+        cmd, w = _parse_words(line.split(";", 1)[0])
+        if cmd == "M82":
+            self.e_relative = False
+        elif cmd == "M83":
+            self.e_relative = True
+        elif cmd == "G92":
+            if "E" in w:
+                self.e = w["E"]
+        elif cmd == "G10":
+            self.fw_retracted = True
+        elif cmd == "G11":
+            self.fw_retracted = False
+        elif cmd == "M106":
+            if int(w.get("P", self.fan_index)) == self.fan_index:
+                self.fan = w.get("S", 255.0)
+        elif cmd == "M107":
+            if int(w.get("P", self.fan_index)) == self.fan_index:
+                self.fan = 0.0
+        elif cmd in ("G0", "G1", "G2", "G3"):
+            if "F" in w:
+                self.f = w["F"]
+            x0, y0 = self.x, self.y
+            de = 0.0
+            extruding = False
+            if "E" in w:
+                de = w["E"] if self.e_relative else w["E"] - self.e
+                if not self.e_relative:
+                    self.e = w["E"]
+                if de < 0.0:
+                    self.retracted -= de
+                elif de > 0.0:
+                    extruding = de > self.retracted + 1e-6
+                    self.retracted = max(0.0, self.retracted - de)
+            self.x = w.get("X", self.x)
+            self.y = w.get("Y", self.y)
+            return {"cmd": cmd, "w": w, "x0": x0, "y0": y0, "x1": self.x, "y1": self.y,
+                    "de": de, "extruding": extruding, "moved": ("X" in w) or ("Y" in w)}
+        return None
+
+
+def _scan_gcode(lines, e_relative):
+    """Returns (layers, bbl_flavor). Each layer: z, marker (line index of its layer-change
+    tag), box (wall extrusion bbox), end (index of the next layer-change tag or None),
+    end_state (_Stream snapshot at end)."""
+    bbl = any(l.startswith("; CHANGE_LAYER") for l in lines[:20000])
+    layers = []
+    cur = None
+    want_z = False
+    s = _Stream(e_relative, bbl)
+    for i, raw in enumerate(lines):
+        line = raw.strip()
+        if line.startswith(";"):
+            body = line[1:]
+            if body.startswith(" CHANGE_LAYER") or body.startswith("LAYER_CHANGE"):
+                if cur is not None:
+                    cur["end"] = i
+                    cur["end_state"] = s.snapshot()
+                cur = {"z": None, "marker": i, "box": None, "end": None, "end_state": None}
+                layers.append(cur)
+                want_z = True
+                continue
+            if body.startswith(" Z_HEIGHT: ") or body.startswith("Z:"):
+                if want_z and cur is not None:
+                    try:
+                        cur["z"] = float(body.split(":", 1)[1])
+                    except ValueError:
+                        pass
+                    want_z = False
+                continue
+        mv = s.feed(raw)
+        if (mv is not None and mv["extruding"] and mv["moved"] and cur is not None
+                and s.feature in _WALL_ROLES and None not in (mv["x0"], mv["y0"], mv["x1"], mv["y1"])):
+            b = cur["box"]
+            lo_x, hi_x = min(mv["x0"], mv["x1"]), max(mv["x0"], mv["x1"])
+            lo_y, hi_y = min(mv["y0"], mv["y1"]), max(mv["y0"], mv["y1"])
+            cur["box"] = (lo_x, lo_y, hi_x, hi_y) if b is None else (
+                min(b[0], lo_x), min(b[1], lo_y), max(b[2], hi_x), max(b[3], hi_y))
+    return layers, bbl
+
+
+def _calibrate(captured, gcode_layers):
+    """Measure the object->G-code XY offset from matching layer bounding boxes."""
+    dxs, dys, dws, dhs = [], [], [], []
+    matched = 0
+    for gl in gcode_layers:
+        if gl["z"] is None:
+            continue
+        cl = captured.get(_zkey(gl["z"]))
+        if cl is None:
+            continue
+        matched += 1
+        ref, box = cl["ref"], gl["box"]
+        if ref is None or box is None:
+            continue
+        dxs.append(0.5 * (box[0] + box[2]) - 0.5 * (ref[0] + ref[2]))
+        dys.append(0.5 * (box[1] + box[3]) - 0.5 * (ref[1] + ref[3]))
+        dws.append((box[2] - box[0]) - (ref[2] - ref[0]))
+        dhs.append((box[3] - box[1]) - (ref[3] - ref[1]))
+    cal = {"matched": matched, "samples": len(dxs), "ok": False}
+    if not dxs:
+        cal["why"] = "no layer had both a captured reference box and wall moves in the G-code"
+        return cal
+    dx, dy = _median(dxs), _median(dys)
+    devs = sorted(max(abs(a - dx), abs(b - dy)) for a, b in zip(dxs, dys))
+    p90 = devs[min(len(devs) - 1, int(0.9 * len(devs)))]
+    size = max(abs(_median(dws)), abs(_median(dhs)))
+    cal.update({"dx": dx, "dy": dy, "spread_p90": p90, "spread_max": devs[-1], "size_mismatch": size})
+    if p90 > 0.5:
+        cal["why"] = "offset differs between layers (more than one object/instance on the plate?)"
+    elif size > 1.5:
+        cal["why"] = "G-code walls and captured geometry differ in size (wrong object or stale capture?)"
+    else:
+        cal["ok"] = True
+    return cal
+
+
+def _wave_block(layer_cap, state, cal, bbl, cfg, totals):
+    """G-code for the waves of one layer, leaving the stream state as found."""
+    w = cfg["line_width"]
+    h = layer_cap["height"]
+    e_per_mm = cfg["flow_mm3_per_mm"] / (math.pi * (cfg["filament_diameter"] * 0.5) ** 2)
+    retract = cfg["retract"]
+    f_print = cfg["print_speed"] * 60.0
+    f_travel = cfg["travel_speed"] * 60.0
+    hop_limit = cfg["connector_limit"]
+
+    out = [_TAG + "_START z=" + _fmt(layer_cap["z"]) + " paths=" + str(len(layer_cap["paths"])) + "\n"]
+    if bbl:
+        out += ["; FEATURE: Overhang wall\n", "; LINE_WIDTH: " + _fmt(w) + "\n", "; LAYER_HEIGHT: " + _fmt(h) + "\n"]
+    else:
+        out += [";TYPE:Overhang wall\n", ";WIDTH:" + _fmt(w) + "\n", ";HEIGHT:" + _fmt(h) + "\n"]
+    if not state["e_relative"]:
+        out.append("M83\n")
+    fan_p = " P1" if bbl else ""
+    out.append("M106%s S%d\n" % (fan_p, int(round(cfg["fan_speed"] * 2.55))))
+
+    def pull(kind, amount):
+        if kind == "fw":
+            return ["G10\n"]
+        return ["G1 E-%.5f F1800\n" % amount] if amount > 0.0 else []
+
+    def push(kind, amount):
+        if kind == "fw":
+            return ["G11\n"]
+        return ["G1 E%.5f F1800\n" % amount] if amount > 0.0 else []
+
+    if state.get("fw_retracted"):
+        entry_kind, entry_amount = "fw", 0.0
+    elif state.get("retracted", 0.0) > 1e-4:
+        entry_kind, entry_amount = "g1", state["retracted"]
+    else:
+        entry_kind, entry_amount = None, 0.0
+    kind = entry_kind or "g1"
+
+    pos = None
+    retracted = entry_kind is not None
+    for path in layer_cap["paths"]:
+        pts = [(px + cal["dx"], py + cal["dy"]) for px, py in path]
+        start = pts[0]
+        short_hop = pos is not None and math.dist(pos, start) <= hop_limit
+        if short_hop and not retracted:
+            out.append("G1 X%s Y%s F%s\n" % (_fmt(start[0]), _fmt(start[1]), _fmt(f_travel)))
+        else:
+            amount = entry_amount if (retracted and entry_kind is not None and pos is None) else retract
+            if not retracted:
+                out += pull(kind, amount)
+            out.append("G1 X%s Y%s F%s\n" % (_fmt(start[0]), _fmt(start[1]), _fmt(f_travel)))
+            out += push(kind, amount)
+            retracted = False
+        if pos is not None:
+            totals["travel_mm"] += math.dist(pos, start)
+        out.append("G1 F%s\n" % _fmt(f_print))
+        prev = start
+        for pt in pts[1:]:
+            d = math.hypot(pt[0] - prev[0], pt[1] - prev[1])
+            if d < 1e-4:
+                continue
+            out.append("G1 X%s Y%s E%.5f\n" % (_fmt(pt[0]), _fmt(pt[1]), d * e_per_mm))
+            totals["length_mm"] += d
+            totals["filament_mm"] += d * e_per_mm
+            prev = pt
+        pos = prev
+    if entry_kind is not None:
+        out += pull(entry_kind, entry_amount)  # hand the nozzle back as retracted as it was
+    fan = state.get("fan")
+    out.append("M106%s S%d\n" % (fan_p, int(round(fan))) if fan else ("M107\n" if not bbl else "M106 P1 S0\n"))
+    if not state["e_relative"]:
+        out += ["M82\n", "G92 E%.5f\n" % state["e"]]
+    if state["f"] is not None:
+        out.append("G1 F%s\n" % _fmt(state["f"]))
+    for tag_line in (state["feature_line"], state["width_line"], state["height_line"]):
+        if tag_line is not None:
+            out.append(tag_line if tag_line.endswith("\n") else tag_line + "\n")
+    out.append(_TAG + "_END\n")
+    return out
+
+
+def _post_process(lines, captures, survived, cfg):
+    """Returns (new_lines, summary). `captures` is {object id: capture}."""
+    report = ["version %s; state hand-over: module global %s, capability instance %s"
+              % (_VERSION, "kept" if survived[0] else "LOST", "kept" if survived[1] else "LOST")]
+    if any(line.startswith(_TAG) for line in lines[:200]):
+        return lines, "already processed, left untouched"
+
+    if not captures:
+        report.append("nothing captured at slice time (re-slice with the plugin selected): nothing injected")
+    elif len(captures) > 1:
+        report.append("%d objects on the plate; this version supports exactly one: nothing injected" % len(captures))
+    else:
+        cap = next(iter(captures.values()))
+        st = cap["stats"]
+        report.append("generated at %s: %d wave path(s) in %d region(s) on %d layer(s), %s mm; slices cut on %d layer(s)"
+                      % (cap["generated_at"], st["paths"], st["regions"], st["wave_layers"],
+                         _fmt(st["length_mm"]), cap["cut_layers"]))
+        if st["wave_layers"] and not cap["cut_layers"]:
+            report.append("WARNING: the slices were not cut, so the slicer's own walls/infill are still there; "
+                          "re-slice from scratch with the plugin enabled")
+        gcode_layers, bbl = _scan_gcode(lines, cfg["e_relative"])
+        cal = _calibrate(cap["layers"], gcode_layers)
+        report.append("G-code: %s tags, %d layers, %d matched by Z, %d usable for calibration"
+                      % ("Bambu" if bbl else "standard", len(gcode_layers), cal["matched"], cal["samples"]))
+        if "dx" in cal:
+            report.append("object->plate offset X %s Y %s mm (90%% of layers within %s mm, size mismatch %s mm)"
+                          % (_fmt(cal["dx"]), _fmt(cal["dy"]), _fmt(cal["spread_p90"]), _fmt(cal["size_mismatch"])))
+        if not cal["ok"]:
+            report.append("calibration FAILED: " + cal["why"] + "; nothing injected")
+        elif not cfg["enabled"]:
+            report.append("enabled = 0: report only")
+        elif st["wave_layers"]:
+            cfg = dict(cfg, line_width=cap["line_width"])
+            totals = {"length_mm": 0.0, "filament_mm": 0.0, "travel_mm": 0.0}
+            layers_done = 0
+            no_end = 0
+            for gl in reversed(gcode_layers):
+                if gl["z"] is None:
+                    continue
+                cl = cap["layers"].get(_zkey(gl["z"]))
+                if cl is None or not cl["paths"]:
+                    continue
+                if gl["end"] is None:
+                    no_end += 1
+                    continue
+                lines[gl["end"]:gl["end"]] = _wave_block(cl, gl["end_state"], cal, bbl, cfg, totals)
+                layers_done += 1
+            minutes = (totals["length_mm"] / max(cfg["print_speed"], 0.1)
+                       + totals["travel_mm"] / max(cfg["travel_speed"], 0.1)) / 60.0
+            report.append("injected waves on %d layer(s): %s mm of wave line, %s mm of filament, about %s min"
+                          % (layers_done, _fmt(totals["length_mm"]), _fmt(totals["filament_mm"]), _fmt(minutes))
+                          + (" (%d top layer(s) skipped)" % no_end if no_end else ""))
+
+    stamp = [_TAG + " " + text + "\n" for text in report]
+    lines[1 if lines else 0:1 if lines else 0] = stamp
+    return lines, "; ".join(report)
+
+
+_VERSION = "0.1.0"
+
+
+# ============================================================================
+# the capability
+# ============================================================================
+
+class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
+    def get_name(self):
+        return "Wave Overhangs"
+
+    def get_default_config(self):
+        return _DEFAULTS
+
+    def execute(self, ctx):
+        step = ctx.step
+        if step == orca.slicing.Step.posSlice and ctx.object is not None:
+            return self._slice(ctx)
+        if step == orca.slicing.Step.posPerimeters and ctx.object is not None:
+            return self._perimeters(ctx)
+        if step == orca.slicing.Step.psGCodePostProcess and ctx.gcode_path:
+            return self._inject(ctx)
+        return orca.ExecutionResult.success()
+
+    def _stores(self):
+        store = getattr(self, "_wave_state", None)
+        if store is None:
+            store = {}
+            self._wave_state = store
+        return (_STATE, store)
+
+    def _remember(self, ctx, cap):
+        live = None
+        try:
+            live = {o.id() for o in ctx.print.objects()}
+        except AttributeError:
+            pass
+        for target in self._stores():
+            if live is not None:
+                for stale in [oid for oid in target if oid not in live]:
+                    del target[stale]
+            target[ctx.object.id()] = cap
+
+    def _slice(self, ctx):
+        p = _params(self)
+        cap, cuts = _generate_object(ctx, p)
+        if ctx.cancelled():
+            return orca.ExecutionResult.success()
+        if p["enabled"]:
+            cap["cut_layers"] = _cut_slices(ctx, cuts)
+        self._remember(ctx, cap)
+        st = cap["stats"]
+        return orca.ExecutionResult.success(
+            "Wave Overhangs: %d wave path(s) on %d layer(s); slices cut on %d layer(s)"
+            % (st["paths"], st["wave_layers"], cap["cut_layers"]))
+
+    def _perimeters(self, ctx):
+        oid = ctx.object.id()
+        cap = None
+        for target in self._stores():
+            cap = target.get(oid)
+            if cap is not None:
+                break
+        if cap is None:
+            # posSlice was cached from before the plugin was active: the slices can no
+            # longer be cut, so generate for the report only and inject nothing.
+            cap, _ = _generate_object(ctx, _params(self))
+            cap["generated_at"] = "posPerimeters (posSlice was cached)"
+            for entry in cap["layers"].values():
+                entry["paths"] = []
+        if ctx.cancelled():
+            return orca.ExecutionResult.success()
+        _capture_refs(ctx, cap)
+        self._remember(ctx, cap)
+        return orca.ExecutionResult.success("Wave Overhangs: reference boxes captured")
+
+    def _inject(self, ctx):
+        p = _params(self)
+        instance_state = getattr(self, "_wave_state", None)
+        survived = (bool(_STATE), bool(instance_state))
+        captures = _STATE or instance_state or {}
+        nozzle = _first_float(ctx.config_value("nozzle_diameter"), 0.4)
+        cfg = {
+            "enabled":           p["enabled"] != 0.0,
+            "e_relative":        _truthy(ctx.config_value("use_relative_e_distances")),
+            "filament_diameter": _first_float(ctx.config_value("filament_diameter"), 1.75),
+            "retract":           min(_first_float(ctx.config_value("retraction_length"), 0.8), 2.0),
+            "flow_mm3_per_mm":   max(p["flow_mm3_per_mm"], 0.0),
+            "print_speed":       max(p["print_speed_mm_s"], 0.1),
+            "travel_speed":      max(p["travel_speed_mm_s"], 1.0),
+            "fan_speed":         min(max(p["fan_speed_percent"], 0.0), 100.0),
+            "connector_limit":   max(p["line_spacing_mm"], nozzle) + max(p["perimeter_overlap_mm"], 0.0),
+            "line_width":        nozzle,
+        }
+        with open(ctx.gcode_path, "r", encoding="utf-8", errors="surrogateescape", newline="") as f:
+            lines = f.readlines()
+        before = list(lines)
+        lines, summary = _post_process(lines, captures, survived, cfg)
+        if lines != before:
+            with open(ctx.gcode_path, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
+                f.writelines(lines)
+        return orca.ExecutionResult.success("Wave Overhangs: " + summary)
+
+
+@orca.plugin
+class WaveOverhangsPackage(orca.base):
+    def register_capabilities(self):
+        orca.register_capability(WaveOverhangs)

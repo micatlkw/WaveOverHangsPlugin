@@ -11,17 +11,17 @@ Position, retraction and numpy are checked; results are in CLAUDE.md.
 
 All three modes were run in OrcaSlicer; results and the recommendation (`shrink`) are in CLAUDE.md.
 
-## 3. Port the generator
+## 3. Port the generator — done, awaiting a real run
 
-`../OrcaSlicer-WaveOverhangs/src/libslic3r/WaveOverhangs/WaveOverhangs.cpp` (~890 lines) leans
-on polygon offsets; the host only offers pairwise booleans. Before porting, try declaring a
-dependency such as `pyclipper` or `shapely` in the plugin header (`dependencies = [...]`, as
-`../OrcaSlicer/sandboxes/orca_inspector_plugin_any.py` does with numpy). If OrcaSlicer installs
-it, the port is much more direct and faster.
+`wave_overhangs_plugin.py` v0.1.0 (pyclipper; decisions: AGPL-3.0, no outer wall over the
+overhang, every overhang waved). Tested outside OrcaSlicer: `tests/generator_smoke.py` (ring,
+cantilever, T with a neck) and a fake-host run on the first test model's G-code (cut only the
+overhang layer, 25 rings r 15.6–24.0 mm, retraction/fan/E state restored, idempotent).
 
-Probes: `probes/probe_pyclipper.py` and `probes/probe_shapely.py` (one package each, because a
-failed dependency install blocks the whole plugin from loading). Install each through the
-Plugins dialog and run it; the result message reports the version and checks round offsets,
-union/difference with holes, open-polyline clipping, open-path buffering, and a timing. Both pass
-outside OrcaSlicer (Python 3.12, pyclipper 1.4.0, shapely 2.2.0 + numpy). Awaiting the result
-inside OrcaSlicer.
+## 4. Next
+
+- Install `wave_overhangs_plugin.py` in OrcaSlicer, slice the test models, export, and check the
+  `; WAVE_OVERHANGS` report and the waves in a G-code viewer (non-Bambu preview won't show them).
+- Check what the slicer prints on the cut layer and on the layer above (bridge floor).
+- Print one. Defaults are the fork's: 2 mm/s waves, so a large overhang layer takes long
+  (the ring test model: ~26 min for one layer).
