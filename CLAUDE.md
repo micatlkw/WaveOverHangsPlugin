@@ -23,7 +23,8 @@ Current state:
   test model: 32 mm square column under a ~45 mm disc at z=30) worked: 71 wave paths in one
   region on z=30, slices cut on that layer only, exact calibration; the slicer printed the
   shrunk square's walls inside the waves, bridge + overhang wall over the whole disc ring at
-  z=30.2 (the floor) and solid infill at z=30.4. Not printed yet.
+  z=30.2 (the floor) and solid infill at z=30.4. Printed with the fork's defaults: the user
+  reported it printed perfectly.
 - `wave_overhang_spike_plugin.py` — the spike that proved the route (hand-over, offset
   calibration, retraction, `shrink` vs `delete`). Kept as reference; see "Spike" below.
 - `probes/` — dependency probes; pyclipper and shapely both install inside OrcaSlicer.

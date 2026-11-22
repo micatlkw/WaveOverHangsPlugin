@@ -22,7 +22,6 @@ overhang layer, 25 rings r 15.6–24.0 mm, retraction/fan/E state restored, idem
 
 - Done: first real run in OrcaSlicer (see "Current state" in CLAUDE.md); waves, cut and bridge
   floor are where they should be.
-- Print the test model. Defaults are the fork's (2 mm/s waves, 0.15 mm³/mm, fan 100 %): the
-  wave layer adds about 16 min. Watch: waves bonding to the anchor band, sag between fronts,
-  the bridge floor on top, oozing on the retracted travels between sides.
+- Done: printed the test model with the fork's defaults (2 mm/s waves, 0.15 mm³/mm, fan
+  100 %; the wave layer adds about 16 min). The user reported it printed perfectly.
 - Then: models with several overhang layers (sloped/stacked overhangs) and holes.
