@@ -27,7 +27,7 @@ shows the waves and the real print time.
 
 ## Requirements
 
-- An OrcaSlicer build that has the Python plugin system (2.6.0-dev and later).
+- OrcaSlicer 2.5 or later (the first release with the Python plugin system).
 - An internet connection the first time the plugin is installed. OrcaSlicer installs the
   plugin's Python packages (`pyclipper`, `numpy`) by itself.
 
