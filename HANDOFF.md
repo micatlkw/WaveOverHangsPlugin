@@ -59,12 +59,19 @@ step. Test Object's curved side is waved from where its edge grows ≥ ~0.2 mm p
 `docs/upstream-proposal-preview-postprocess.md`: run plugins (not scripts) in place after
 slicing for all printers, as the Bambu path does, then `reload_gcode_moves()`. Not filed yet.
 
-## 7. Minimum overhang — done in code, not yet run in OrcaSlicer
+## 7. Minimum overhang — done
 
 Plugin setting `min_overhang_mm` (default 0 = fork behaviour). Tested outside OrcaSlicer with
 `tests/min_overhang_test.py`. To check: slice the plate with Test Object 1 with
 `min_overhang_mm` = 0.5; its curved side (z 17.4–20.0, edge growing 0.2–1 mm per layer) should
 keep normal walls on the layers that grow less than 0.5 mm, and the z=20.2 shelf stay waved.
+
+Real run (same 4-copy plate, `min_overhang_mm` = 0.5): Test Object 1's curved side keeps the
+slicer's walls on z 17.4–19.4 (edge growing 0.21–0.48 mm per layer) and is waved from z=19.6
+(growth > 0.5) up to the shelf at z=20.2, on both copies; z=5.2 and z=10.2 unchanged. Its
+waves went from 17 layers / 183 paths to 6 layers / 150 paths. OverhangWaveTest unchanged: its
+cone grows 0.55 mm per layer, just above the threshold (0.6 would leave it to the slicer).
+Not printed.
 
 ## 8. Next
 
