@@ -1636,6 +1636,8 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
 
     def execute(self, ctx):
         step = ctx.step
+        if ctx.print is not None and step != orca.slicing.Step.psGCodePostProcess:
+            self._refresh(ctx)
         if step == orca.slicing.Step.posSlice and ctx.object is not None:
             return self._slice(ctx)
         if step == orca.slicing.Step.posPerimeters and ctx.object is not None:
@@ -1652,24 +1654,33 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
         return (_STATE, store)
 
     def _remember(self, ctx, cap):
-        live = None
-        try:
-            order = [o.id() for o in ctx.print.objects()]
-            live = set(order)
-            # Position in the print's object list: the object id in "_id_<n>_copy_" labels
-            # (GCode::assign_object_label_ids). Only a tie-breaker; objects are matched by shape.
-            cap["index"] = order.index(ctx.object.id())
-        except (AttributeError, ValueError):
-            pass
         try:
             cap["name"] = ctx.object.model_object().name
         except Exception:
             pass
         for target in self._stores():
-            if live is not None:
-                for stale in [oid for oid in target if oid not in live]:
-                    del target[stale]
             target[ctx.object.id()] = cap
+        self._refresh(ctx)
+
+    def _refresh(self, ctx):
+        """Drop captures of objects no longer in the print and renumber the rest.
+
+        The index is the object's position in the print's object list, which is the object
+        id in "_id_<n>_copy_" labels (GCode::assign_object_label_ids). It changes when other
+        objects are added or removed while this one's steps stay cached, so it is refreshed
+        on every slicing step. Only a tie-breaker; objects are matched by shape.
+        """
+        try:
+            order = [o.id() for o in ctx.print.objects()]
+        except AttributeError:
+            return
+        position = {oid: n for n, oid in enumerate(order)}
+        for target in self._stores():
+            for oid in list(target):
+                if oid not in position:
+                    del target[oid]
+                else:
+                    target[oid]["index"] = position[oid]
 
     def _slice(self, ctx):
         p = _params(self)

@@ -43,6 +43,11 @@ Real run: OverhangWaveTest twice (copy/paste, so a second object sharing the fir
 plus Assembly, Klipper labels: 3 instances placed at the EXCLUDE_OBJECT_DEFINE centres (deviation
 ≤ 0.001 mm), 25 wave blocks each inside its own object's block. Labels off: warning, nothing
 injected. Not printed. Not yet tried: a real second copy (the "+" instance button, `_copy_1`).
+Second real run (OverhangWaveTest, Assembly, the fork's "Test Object 1"; 110 layers): all three
+placed exactly, 30 blocks. The report showed a stale object number for Assembly (its steps were
+cached from the previous plate, where it was #2); indices are now refreshed on every slicing
+step. Test Object's curved side is waved from where its edge grows ≥ ~0.2 mm per layer
+(z 17.4–20.0, 3–5 lines per layer), as the fork would: candidate for a minimum-overhang setting.
 
 ## 6. Next
 
