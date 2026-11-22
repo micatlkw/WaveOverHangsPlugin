@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.1.0"
+# version = "0.2.0"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhangs -- slicing-pipeline plugin.
@@ -33,9 +33,13 @@ How it works
   above as hanging over air, so it prints a bridge floor on top of the waves.
 * Step.posPerimeters (per object): a bounding box of each layer's walls is kept
   to measure the object -> plate offset later (it is not exposed to plugins).
-* Step.psGCodePostProcess: the G-code is scanned per layer, the offset measured,
-  and the waves of each layer are inserted before the next layer change, at the
-  wave speed / flow / fan settings, restoring the slicer's state afterwards.
+* Step.psGCodePostProcess: the G-code is split per layer and per object copy (by the
+  object labels the slicer writes with "Exclude objects" or "Label objects"), each
+  copy is matched to its object by comparing wall boxes layer by layer, which also
+  measures its offset on the plate, and the waves of each layer are inserted at the
+  end of that copy's part of the layer, at the wave speed / flow / fan settings,
+  restoring the slicer's state afterwards. Without labels only a plate with one
+  object and one copy can be placed.
 
 Differences from the fork (first version)
 -----------------------------------------
@@ -43,19 +47,21 @@ Differences from the fork (first version)
   the waves run to the edge.
 * Every overhang gets waves (wave_overhangs_instead_of_bridges = on); the fork's
   bridgeability test needs the slicer's bridge detector, which plugins cannot call.
-* Seeds use the generator's own fallback (boundary of the wave area inside the
-  expanded anchors) instead of the Z-tracking Clipper variant.
-* Waves are printed at the end of their layer, not before that island's walls.
+* Seeds follow Algorithm::wave_seeds (each anchoring contour expanded with square
+  joins, clipped to the wave area); the generator's own fallback is kept as fallback.
+* Waves are printed at the end of their copy's part of the layer, not before that
+  island's walls.
 * Floor layers, Hilbert floors, per-wave temperature and minimum wave/layer times
   are not implemented; the bridge the slicer prints above is the floor.
 * Overhangs on the top layer get no waves (no following layer-change tag to
-  anchor the insertion on). One object, one instance, no by-object printing.
+  anchor the insertion on). By-object printing and wipe towers are untested.
 
 A report is written as "; WAVE_OVERHANGS ..." comment lines after the first line
 of the exported G-code.
 """
 import json
 import math
+import re
 
 import numpy as np
 import orca
@@ -1210,44 +1216,198 @@ class _Stream:
         return None
 
 
+# Object labels, in order of preference. OrcaSlicer (GCode.cpp) writes "; printing object"
+# comments when gcode_label_objects is on, and, when exclude_object is on, EXCLUDE_OBJECT_*
+# (Klipper), M486 (Marlin, RepRapFirmware) or "unique label id" comments (Bambu). The start
+# and end strings of the exclude-object families are written lazily (at the next travel), so
+# an instance's end label can come after the next layer-change tag.
+_LABEL_FAMILIES = (
+    ("comment", "; printing object labels"),
+    ("klipper", "EXCLUDE_OBJECT_START/END"),
+    ("m486", "M486"),
+    ("bambu", "Bambu label ids"),
+)
+
+
+def _label_event(family, line):
+    """("start", key) / ("end", None) if `line` (stripped) is a label of `family`, else None."""
+    if family == "comment":
+        if line.startswith("; printing object "):
+            return "start", line[len("; printing object "):].strip()
+        if line.startswith("; stop printing object ") and "unique label id" not in line:
+            return "end", None
+    elif family == "klipper":
+        if line.startswith("EXCLUDE_OBJECT_START"):
+            return "start", line.split("NAME=", 1)[-1].strip()
+        if line.startswith("EXCLUDE_OBJECT_END"):
+            return "end", None
+    elif family == "m486":
+        if line.startswith("M486 S"):
+            try:
+                n = int(float(line[6:].split(";", 1)[0].split()[0]))
+            except (ValueError, IndexError):
+                return None
+            return ("end", None) if n < 0 else ("start", "M486 S%d" % n)
+    elif family == "bambu":
+        if line.startswith("; start printing object, unique label id:"):
+            return "start", "label id " + line.split(":", 1)[1].strip()
+        if line.startswith("; stop printing object, unique label id:"):
+            return "end", None
+    return None
+
+
+def _is_layer_tag(line):
+    return line.startswith("; CHANGE_LAYER") or line.startswith(";LAYER_CHANGE")
+
+
+def _label_family(lines):
+    """The preferred label family used inside the layers, or None."""
+    seen = set()
+    in_layers = False
+    for raw in lines:
+        line = raw.strip()
+        if not in_layers:
+            in_layers = _is_layer_tag(line)
+            continue
+        if not line or line[0] not in ";EM":
+            continue
+        for family, _ in _LABEL_FAMILIES:
+            if family not in seen and _label_event(family, line) is not None:
+                seen.add(family)
+        if "comment" in seen:
+            break
+    for family, _ in _LABEL_FAMILIES:
+        if family in seen:
+            return family
+    return None
+
+
 def _scan_gcode(lines, e_relative):
-    """Returns (layers, bbl_flavor). Each layer: z, marker (line index of its layer-change
-    tag), box (wall extrusion bbox), end (index of the next layer-change tag or None),
-    end_state (_Stream snapshot at end)."""
+    """Split the G-code into segments: one per layer and labelled object instance (or one per
+    layer when the file has no object labels).
+
+    Returns (segments, info). Each segment: key (label of the instance, None without labels),
+    z, box (wall extrusion bbox), end (line index where the segment ends: its end label, the
+    next instance's start label or the next layer-change tag; None at the end of the file),
+    end_state (_Stream snapshot at end). info: bbl, family, layers.
+    """
     bbl = any(l.startswith("; CHANGE_LAYER") for l in lines[:20000])
-    layers = []
-    cur = None
+    family = _label_family(lines)
+    segments = []
+    seg = None
+    key = None
+    z = None
     want_z = False
+    n_layers = 0
     s = _Stream(e_relative, bbl)
+
+    def close(i):
+        if seg is not None:
+            seg["end"] = i
+            seg["end_state"] = s.snapshot()
+
     for i, raw in enumerate(lines):
         line = raw.strip()
         if line.startswith(";"):
             body = line[1:]
-            if body.startswith(" CHANGE_LAYER") or body.startswith("LAYER_CHANGE"):
-                if cur is not None:
-                    cur["end"] = i
-                    cur["end_state"] = s.snapshot()
-                cur = {"z": None, "marker": i, "box": None, "end": None, "end_state": None}
-                layers.append(cur)
+            if _is_layer_tag(line):
+                close(i)
+                seg = None
+                key = None
+                z = None
                 want_z = True
+                n_layers += 1
                 continue
             if body.startswith(" Z_HEIGHT: ") or body.startswith("Z:"):
-                if want_z and cur is not None:
+                if want_z:
                     try:
-                        cur["z"] = float(body.split(":", 1)[1])
+                        z = float(body.split(":", 1)[1])
                     except ValueError:
                         pass
                     want_z = False
+                    if seg is not None and seg["z"] is None:
+                        seg["z"] = z
                 continue
+        if family is not None and n_layers:
+            ev = _label_event(family, line)
+            if ev is not None:
+                close(i)
+                seg = None
+                key = ev[1] if ev[0] == "start" else None
         mv = s.feed(raw)
-        if (mv is not None and mv["extruding"] and mv["moved"] and cur is not None
+        if not n_layers or (family is not None and key is None):
+            continue
+        if seg is None:
+            seg = {"key": key, "z": z, "box": None, "end": None, "end_state": None}
+            segments.append(seg)
+        if (mv is not None and mv["extruding"] and mv["moved"]
                 and s.feature in _WALL_ROLES and None not in (mv["x0"], mv["y0"], mv["x1"], mv["y1"])):
-            b = cur["box"]
+            b = seg["box"]
             lo_x, hi_x = min(mv["x0"], mv["x1"]), max(mv["x0"], mv["x1"])
             lo_y, hi_y = min(mv["y0"], mv["y1"]), max(mv["y0"], mv["y1"])
-            cur["box"] = (lo_x, lo_y, hi_x, hi_y) if b is None else (
+            seg["box"] = (lo_x, lo_y, hi_x, hi_y) if b is None else (
                 min(b[0], lo_x), min(b[1], lo_y), max(b[2], hi_x), max(b[3], hi_y))
-    return layers, bbl
+    return segments, {"bbl": bbl, "family": family, "layers": n_layers}
+
+
+def _instances(segments):
+    """Group segments by instance key and layer: {key: [layer, ...]} in file order, where a
+    layer merges every segment of that instance at that z (box union; ends at the last one)."""
+    by_key = {}
+    for seg in segments:
+        if seg["z"] is None:
+            continue
+        layers = by_key.setdefault(seg["key"], {})
+        zk = _zkey(seg["z"])
+        cur = layers.get(zk)
+        if cur is None:
+            layers[zk] = dict(seg)
+            continue
+        a, b = cur["box"], seg["box"]
+        if b is not None:
+            cur["box"] = b if a is None else (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+        if seg["end"] is None or (cur["end"] is not None and seg["end"] > cur["end"]):
+            cur["end"], cur["end_state"] = seg["end"], seg["end_state"]
+    return {key: list(layers.values()) for key, layers in by_key.items()}
+
+
+def _label_object_index(key):
+    """Object index (position in the print's object list) named by a label, if it names one."""
+    if key is None:
+        return None
+    m = re.search(r"(?:_id_|\bid:)(\d+)(?:_copy_| copy )\d+$", key)
+    return int(m.group(1)) if m else None
+
+
+def _match_object(captures, layers, key):
+    """Pick the capture whose layers match this instance's G-code layers.
+
+    Every capture is calibrated against the instance; among those that pass, the best
+    covers most layers on both sides, then has the smallest size mismatch and spread.
+    Returns (object id or None, calibration, number of passing candidates).
+    """
+    best = None
+    passing = []
+    for oid, cap in captures.items():
+        cal = _calibrate(cap["layers"], layers)
+        if not cal["ok"]:
+            if best is None or (best[1].get("samples", 0) < cal.get("samples", 0)):
+                best = (None, cal)
+            continue
+        cover = cal["matched"] / max(len(layers), 1) + cal["matched"] / max(len(cap["layers"]), 1)
+        passing.append((-round(cover, 3), round(cal["size_mismatch"], 2), round(cal["spread_p90"], 2), oid, cal))
+    if not passing:
+        return None, (best[1] if best else {"ok": False, "why": "no object captured"}), 0
+    passing.sort(key=lambda t: t[:3])
+    top = [t for t in passing if t[:3] == passing[0][:3]]
+    pick = top[0]
+    want = _label_object_index(key)
+    if len(top) > 1 and want is not None:
+        for t in top:
+            if captures[t[3]].get("index") == want:
+                pick = t
+                break
+    return pick[3], pick[4], len(top)
 
 
 def _calibrate(captured, gcode_layers):
@@ -1278,7 +1438,7 @@ def _calibrate(captured, gcode_layers):
     size = max(abs(_median(dws)), abs(_median(dhs)))
     cal.update({"dx": dx, "dy": dy, "spread_p90": p90, "spread_max": devs[-1], "size_mismatch": size})
     if p90 > 0.5:
-        cal["why"] = "offset differs between layers (more than one object/instance on the plate?)"
+        cal["why"] = "offset differs between layers (several objects/copies printed without object labels?)"
     elif size > 1.5:
         cal["why"] = "G-code walls and captured geometry differ in size (wrong object or stale capture?)"
     else:
@@ -1376,58 +1536,89 @@ def _post_process(lines, captures, survived, cfg):
 
     if not captures:
         report.append("nothing captured at slice time (re-slice with the plugin selected): nothing injected")
-    elif len(captures) > 1:
-        report.append("%d objects on the plate; this version supports exactly one: nothing injected" % len(captures))
     else:
-        cap = next(iter(captures.values()))
-        st = cap["stats"]
-        report.append("generated at %s: %d wave path(s) in %d region(s) on %d layer(s), %s mm; slices cut on %d layer(s)"
-                      % (cap["generated_at"], st["paths"], st["regions"], st["wave_layers"],
-                         _fmt(st["length_mm"]), cap["cut_layers"]))
-        if st["wave_layers"] and not cap["cut_layers"]:
-            report.append("WARNING: the slices were not cut, so the slicer's own walls/infill are still there; "
-                          "re-slice from scratch with the plugin enabled")
-        gcode_layers, bbl = _scan_gcode(lines, cfg["e_relative"])
-        cal = _calibrate(cap["layers"], gcode_layers)
-        report.append("G-code: %s tags, %d layers, %d matched by Z, %d usable for calibration"
-                      % ("Bambu" if bbl else "standard", len(gcode_layers), cal["matched"], cal["samples"]))
-        if "dx" in cal:
-            report.append("object->plate offset X %s Y %s mm (deviation from it: 90th percentile %s mm,"
-                          " worst layer %s mm; size mismatch %s mm)"
-                          % (_fmt(cal["dx"]), _fmt(cal["dy"]), _fmt(cal["spread_p90"]),
-                             _fmt(cal["spread_max"]), _fmt(cal["size_mismatch"])))
-        if not cal["ok"]:
-            report.append("calibration FAILED: " + cal["why"] + "; nothing injected")
-        elif not cfg["enabled"]:
-            report.append("enabled = 0: report only")
-        elif st["wave_layers"]:
-            cfg = dict(cfg, line_width=cap["line_width"])
-            totals = {"length_mm": 0.0, "filament_mm": 0.0, "travel_mm": 0.0}
-            layers_done = 0
-            no_end = 0
-            for gl in reversed(gcode_layers):
-                if gl["z"] is None:
-                    continue
-                cl = cap["layers"].get(_zkey(gl["z"]))
-                if cl is None or not cl["paths"]:
-                    continue
-                if gl["end"] is None:
-                    no_end += 1
-                    continue
-                lines[gl["end"]:gl["end"]] = _wave_block(cl, gl["end_state"], cal, bbl, cfg, totals)
-                layers_done += 1
-            minutes = (totals["length_mm"] / max(cfg["print_speed"], 0.1)
-                       + totals["travel_mm"] / max(cfg["travel_speed"], 0.1)) / 60.0
-            report.append("injected waves on %d layer(s): %s mm of wave line, %s mm of filament, about %s min"
-                          % (layers_done, _fmt(totals["length_mm"]), _fmt(totals["filament_mm"]), _fmt(minutes))
-                          + (" (%d top layer(s) skipped)" % no_end if no_end else ""))
+        _inject_all(lines, captures, cfg, report)
 
     stamp = [_TAG + " " + text + "\n" for text in report]
     lines[1 if lines else 0:1 if lines else 0] = stamp
     return lines, "; ".join(report)
 
 
-_VERSION = "0.1.0"
+def _object_name(cap, oid):
+    name = cap.get("name") or "object"
+    return "%s (#%s)" % (name, cap["index"]) if cap.get("index") is not None else "%s (id %s)" % (name, oid)
+
+
+def _inject_all(lines, captures, cfg, report):
+    for oid, cap in captures.items():
+        st = cap["stats"]
+        report.append("%s generated at %s: %d wave path(s) in %d region(s) on %d layer(s), %s mm; "
+                      "slices cut on %d layer(s)"
+                      % (_object_name(cap, oid), cap["generated_at"], st["paths"], st["regions"],
+                         st["wave_layers"], _fmt(st["length_mm"]), cap["cut_layers"]))
+        if st["wave_layers"] and not cap["cut_layers"]:
+            report.append("WARNING: %s: the slices were not cut, so the slicer's own walls/infill are still "
+                          "there; re-slice from scratch with the plugin enabled" % _object_name(cap, oid))
+
+    segments, info = _scan_gcode(lines, cfg["e_relative"])
+    bbl = info["bbl"]
+    instances = _instances(segments)
+    labels = dict(_LABEL_FAMILIES).get(info["family"], "none")
+    report.append("G-code: %s tags, %d layers, object labels: %s, %d instance(s)"
+                  % ("Bambu" if bbl else "standard", info["layers"], labels, len(instances)))
+    if info["family"] is None and len(captures) > 1:
+        report.append("WARNING: %d objects but the G-code has no object labels; turn on 'Exclude objects' "
+                      "or 'Label objects' (process settings, Others) so each copy can be placed"
+                      % len(captures))
+
+    plan = []  # (end line index, layer capture, calibration, end state)
+    used = set()
+    for key, layers in instances.items():
+        name = key if key is not None else "whole plate"
+        oid, cal, candidates = _match_object(captures, layers, key)
+        if oid is None:
+            report.append("%s: no captured object matches (%s); skipped"
+                          % (name, cal.get("why", "calibration failed")))
+            continue
+        used.add(oid)
+        cap = captures[oid]
+        waves = 0
+        no_end = 0
+        for gl in layers:
+            cl = cap["layers"].get(_zkey(gl["z"]))
+            if cl is None or not cl["paths"]:
+                continue
+            if gl["end"] is None:
+                no_end += 1
+                continue
+            plan.append((gl["end"], cl, cal, gl["end_state"], cap["line_width"]))
+            waves += 1
+        report.append("%s: %s%s, offset X %s Y %s mm (deviation from it: 90th percentile %s mm, worst layer "
+                      "%s mm; size mismatch %s mm; %d of %d layers compared), waves on %d layer(s)%s"
+                      % (name, _object_name(cap, oid),
+                         " (1 of %d identical matches)" % candidates if candidates > 1 else "",
+                         _fmt(cal["dx"]), _fmt(cal["dy"]), _fmt(cal["spread_p90"]), _fmt(cal["spread_max"]),
+                         _fmt(cal["size_mismatch"]), cal["samples"], len(layers), waves,
+                         " (%d top layer(s) skipped)" % no_end if no_end else ""))
+    for oid, cap in captures.items():
+        if oid not in used and cap["stats"]["wave_layers"]:
+            report.append("%s: has waves but was not found in the G-code (another plate?)" % _object_name(cap, oid))
+
+    if not cfg["enabled"]:
+        report.append("enabled = 0: report only")
+        return
+    totals = {"length_mm": 0.0, "filament_mm": 0.0, "travel_mm": 0.0}
+    # Insert from the bottom of the file up so the earlier indices stay valid.
+    plan.sort(key=lambda t: t[0], reverse=True)
+    for end, cl, cal, state, line_width in plan:
+        lines[end:end] = _wave_block(cl, state, cal, bbl, dict(cfg, line_width=line_width), totals)
+    minutes = (totals["length_mm"] / max(cfg["print_speed"], 0.1)
+               + totals["travel_mm"] / max(cfg["travel_speed"], 0.1)) / 60.0
+    report.append("injected %d wave block(s): %s mm of wave line, %s mm of filament, about %s min"
+                  % (len(plan), _fmt(totals["length_mm"]), _fmt(totals["filament_mm"]), _fmt(minutes)))
+
+
+_VERSION = "0.2.0"
 
 
 # ============================================================================
@@ -1461,8 +1652,16 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
     def _remember(self, ctx, cap):
         live = None
         try:
-            live = {o.id() for o in ctx.print.objects()}
-        except AttributeError:
+            order = [o.id() for o in ctx.print.objects()]
+            live = set(order)
+            # Position in the print's object list: the object id in "_id_<n>_copy_" labels
+            # (GCode::assign_object_label_ids). Only a tie-breaker; objects are matched by shape.
+            cap["index"] = order.index(ctx.object.id())
+        except (AttributeError, ValueError):
+            pass
+        try:
+            cap["name"] = ctx.object.model_object().name
+        except Exception:
             pass
         for target in self._stores():
             if live is not None:

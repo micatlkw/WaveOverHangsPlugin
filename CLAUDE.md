@@ -18,7 +18,7 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 
 Current state:
 
-- `wave_overhangs_plugin.py` — the plugin (v0.1.0). Ports the fork's generator with pyclipper
+- `wave_overhangs_plugin.py` — the plugin (v0.2.0: several objects and copies per plate). Ports the fork's generator with pyclipper
   and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
   test model: 32 mm square column under a ~45 mm disc at z=30) worked: 71 wave paths in one
   region on z=30, slices cut on that layer only, exact calibration; the slicer printed the
@@ -38,6 +38,10 @@ embedded Python (>= 3.12); it imports `orca`, which only exists inside the app.
 - Syntax check: `python3 -m py_compile wave_overhangs_plugin.py`
 - Generator smoke test (needs pyclipper and numpy; matplotlib for the picture):
   `python3 tests/generator_smoke.py [out.png]`
+- G-code half with several objects/copies and every label family:
+  `python3 tests/gcode_instances_test.py`
+- A local venv with the test dependencies: `python3 -m venv .venv && .venv/bin/pip install
+  pyclipper numpy matplotlib` (`.venv/` is excluded in `.git/info/exclude`).
 - Testing outside OrcaSlicer requires stubbing the `orca` module in `sys.modules` before loading
   the plugin file (`orca.slicing.SlicingPipelineCapabilityBase`, `Step`, `unscale`,
   `orca.ExecutionResult`, `orca.plugin`, `orca.base`, `orca.register_capability`, and
@@ -77,6 +81,10 @@ Facts that shaped the approach:
 - Coordinates are scaled integers; convert with `orca.slicing.unscale(1)` (never hardcode 1e-6).
 - Slice geometry is in object space (centred on the object). G-code is in plate space. The
   instance shift is not exposed to plugins, so the spike measures the offset from the G-code.
+- Object labels (`GCode.cpp`, `assign_object_label_ids`): objects are numbered by their position
+  in `print.objects()` (not `PrintObject.id()`), copies within an object from 0; names are
+  `<name>_id_<n>_copy_<c>`. The exclude-object start/end strings are emitted lazily by the
+  writer (at the next travel).
 - Slicing hooks run on the worker thread; do not call `orca.host.ui.*` from them.
 - Preview: for Bambu printers post-processing runs in place right after slicing and the preview
   re-reads the edited file (`BackgroundSlicingProcess.cpp`, `Print::reload_gcode_moves`). For
@@ -105,8 +113,23 @@ Facts that shaped the approach:
   1.25 widths, plus the painted area) is cut out of `region.slices` and `layer.make_slices()` is
   called. The slicer then prints nothing there, and a bridge on the layer above (the floor).
 - **`posPerimeters`**: wall bounding boxes for the offset calibration (as in the spike).
-- **`psGCodePostProcess`**: the waves are inserted before the next layer-change tag of their
-  layer as `;TYPE:Overhang wall`, at the configured flow (mm³/mm), speed and fan, with retraction,
+  Captures are keyed by `PrintObject.id()` and also record the object's position in
+  `print.objects()` and its name.
+- **`psGCodePostProcess`**: `_scan_gcode` splits every layer into one segment per object copy,
+  using the object labels in the file (preference: `; printing object` comments
+  (`gcode_label_objects`), then `EXCLUDE_OBJECT_START/END` (Klipper), `M486 S<n>` (Marlin/RRF),
+  Bambu `unique label id` comments; the last three need `exclude_object`). A segment ends at its
+  end label, the next start label or the next layer-change tag, whichever is first. The
+  exclude-object labels are written lazily, so the last copy's end label comes after the next
+  `;LAYER_CHANGE`; the layer tag ends it then. Without labels each layer is one segment, which
+  only works with one object and one copy (a warning says to turn labels on).
+  Each copy is matched to a capture by calibrating against every capture (`_match_object`:
+  passing ones ranked by layer coverage on both sides, then size mismatch and spread; ties
+  broken by the object index in `_id_<n>_copy_` / `id:<n>` labels), which also gives its
+  offset. Copies of one object are one `PrintObject` (same shape, different shift), so they
+  share a capture. The waves are inserted at the end of the copy's segment (inside its
+  exclude-object block, so cancelling the object also cancels its waves)
+  as `;TYPE:Overhang wall`, at the configured flow (mm³/mm), speed and fan, with retraction,
   fan, E mode, feedrate and tags restored afterwards. Short hops between fronts (≤ the fork's
   connector limit) travel without retracting.
   Paths keep the generator's order (front level by front level, so separate sides alternate),
@@ -126,10 +149,10 @@ Porting notes (things that are easy to get wrong):
 - `overhang_flow` is approximated from config (`thick_bridges`, `bridge_flow`,
   `inner_wall_line_width`); it only sets anchor/seed distances.
 
-Differences from the fork (v0.1.0): no outer wall kept over the overhang
+Differences from the fork (v0.2.0): no outer wall kept over the overhang
 (`wave_overhang_outer_perimeters` = 0); every overhang is waved (bridge detector not available
-to plugins); waves printed at the end of the layer; no floor-layer, Hilbert, temperature or
-min-time features; top-layer overhangs skipped; one object, one instance.
+to plugins); waves printed at the end of their copy's part of the layer; no floor-layer, Hilbert, temperature or
+min-time features; top-layer overhangs skipped; by-object printing and wipe towers untested.
 
 ## Spike architecture (`wave_overhang_spike_plugin.py`)
 
