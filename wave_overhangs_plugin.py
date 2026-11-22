@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.3.0"
+# version = "0.4.0"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhangs -- slicing-pipeline plugin.
@@ -43,8 +43,10 @@ How it works
 
 Differences from the fork (first version)
 -----------------------------------------
-* No normal outer wall is kept over the overhang (wave_overhang_outer_perimeters = 0):
-  the waves run to the edge.
+* The walls kept along the overhang's edge (outer_walls, the fork's
+  wave_overhang_outer_perimeters, default 1) are printed by the plugin right after
+  the waves, along the island's edge where the slicer's own walls were cut away. The
+  fork keeps the slicer's own wall paths instead.
 * Every overhang gets waves (wave_overhangs_instead_of_bridges = on); the fork's
   bridgeability test needs the slicer's bridge detector, which plugins cannot call.
   Extra setting min_overhang_mm (default 0.5; 0 = the fork's behaviour): overhang that
@@ -88,6 +90,12 @@ _DEFAULTS = {
     # Overhang areas that reach no further than this beyond the layer below keep the slicer's
     # own walls (gentle slopes). 0 = wave every overhang, as the fork does.
     "min_overhang_mm":          0.5,
+    # Normal walls kept along the overhang's edge, printed right after the waves and against
+    # them (the fork's wave_overhang_outer_perimeters). 0 = waves run to the edge.
+    "outer_walls":              1,
+    # Speed of those walls; 0 = the slicer's speed for fully overhanging walls
+    # (overhang_4_4_speed), or its bridge speed when that is not set.
+    "wall_speed_mm_s":          0.0,
     # Printing
     "flow_mm3_per_mm":          0.15,   # extrusion of a wave line, independent of layer height
     "print_speed_mm_s":         2.0,
@@ -966,9 +974,13 @@ def _gen_params(ctx, p, k):
     thick = _truthy(ctx.config_value("thick_bridges"))
     bridge_flow = _first_float(ctx.config_value("bridge_flow"), 1.0)
     walls = int(_first_float(ctx.config_value("wall_loops"), 2))
+    outer_w = _width_mm(ctx.config_value("outer_wall_line_width"), nozzle,
+                        _width_mm(ctx.config_value("line_width"), nozzle, 1.125 * nozzle))
     return {
         "nozzle_mm": nozzle,
         "inner_width_mm": inner_w,
+        "outer_width_mm": outer_w,
+        "wall_loops": max(0, walls),
         "thick_bridges": thick,
         "bridge_dmr_mm": math.sqrt(bridge_flow) * nozzle,
         "perimeter_count": max(1, walls),
@@ -1029,6 +1041,73 @@ def island_support(island_polys, lower_raw, half_nozzle, min_overhang, min_area)
     return raw, expand(raw, half_nozzle), True
 
 
+def _join_loop_pieces(pieces):
+    """Rejoin pieces of one clipped closed loop that meet end to start (Clipper splits a
+    loop at its first point)."""
+    out = [list(p) for p in pieces if len(p) >= 2]
+    joined = True
+    while joined:
+        joined = False
+        for i in range(len(out)):
+            for j in range(len(out)):
+                if i != j and out[i][-1] == out[j][0]:
+                    out[i] = out[i] + out[j][1:]
+                    del out[j]
+                    joined = True
+                    break
+            if joined:
+                break
+    return out
+
+
+def kept_walls(island_polys, cut, count, height, ext_w, inner_w, perim_s):
+    """Centre lines of the `count` outermost walls of an island where the cut removed the
+    slicer's own walls. Scaled units in, list of (role, width, polylines) out, innermost
+    wall first (the waves bond to it, the outer wall is laid last)."""
+    squash = height * (1.0 - 0.25 * math.pi)
+    ext_s = ext_w - squash
+    d = ext_w / 2.0
+    out = []
+    for i in range(count):
+        if i == 1:
+            d += (ext_s + perim_s) / 2.0
+        elif i > 1:
+            d += perim_s
+        loops = shrink(island_polys, d)
+        if not loops:
+            break
+        width = ext_w if i == 0 else inner_w
+        pieces = []
+        for loop in to_polylines(loops):
+            pieces += _join_loop_pieces(intersection_pl([loop], cut))
+        pieces = [pl for pl in pieces if polyline_length(pl) > 2.0 * width]
+        if pieces:
+            out.append(("Outer wall" if i == 0 else "Inner wall", width, pieces))
+    out.reverse()
+    return out
+
+
+def island_waves(island, island_polys, lower_raw, lower, P, keep, height, ext_w, inner_w, ov_w, perim_s):
+    """Waves, cut zone and kept walls of one island (all scaled).
+
+    Returns (regions, cut polygons, walls); regions is empty when nothing is waved.
+    """
+    # With kept walls the waves fill the island shrunk by them (the fork's wave_infill).
+    wave_area = union_ex(shrink(island_polys, keep * perim_s)) if keep else [island]
+    if not wave_area:
+        return [], [], []
+    regions, residual = generate(wave_area, lower, P)
+    if not regions:
+        return [], [], []
+    zone = painted_overhang_zone(island_polys, lower_raw, residual, ov_w // 2)
+    clip_region = union(expand(zone, 1.5 * perim_s, JT_ROUND, 0.0) + residual)
+    fill_carve = (union(expand(zone, 1.25 * ov_w, JT_ROUND, 0.0) + expand(residual, ov_w // 2, JT_ROUND, 0.0))
+                  if zone else residual)
+    cut = clip_region + fill_carve
+    walls = kept_walls(island_polys, union(cut), keep, height, ext_w, inner_w, perim_s) if keep else []
+    return regions, cut, walls
+
+
 def _generate_object(ctx, p):
     """Waves and cut zones for every layer of ctx.object, from the slices as they are now.
 
@@ -1039,10 +1118,14 @@ def _generate_object(ctx, p):
     G = _gen_params(ctx, p, k)
     half_nozzle = int(round(G["nozzle_mm"] * 0.5 / k))
     min_overhang = int(round(max(p["min_overhang_mm"], 0.0) / k))
+    keep = min(max(0, int(p["outer_walls"])), G["wall_loops"])
+    ext_w = G["outer_width_mm"] / k
+    inner_w = G["inner_width_mm"] / k
 
     layers = {}
     cuts = {}
-    stats = {"wave_layers": 0, "regions": 0, "paths": 0, "length_mm": 0.0, "narrow_kept": 0}
+    stats = {"wave_layers": 0, "regions": 0, "paths": 0, "length_mm": 0.0, "narrow_kept": 0,
+             "wall_mm": 0.0}
     obj_layers = list(ctx.object.layers())
     islands_of = [None] * len(obj_layers)
     for idx, layer in enumerate(obj_layers):
@@ -1050,7 +1133,8 @@ def _generate_object(ctx, p):
             break
         islands = [_expoly_from_host(ex) for ex in layer.lslices()]
         islands_of[idx] = islands
-        entry = {"z": float(layer.print_z), "height": float(layer.height), "ref": None, "paths": []}
+        entry = {"z": float(layer.print_z), "height": float(layer.height), "ref": None, "paths": [],
+                 "walls": []}
         layers[_zkey(layer.print_z)] = entry
         if idx == 0 or not islands:
             continue
@@ -1058,7 +1142,9 @@ def _generate_object(ctx, p):
         lower = expand(lower_raw, half_nozzle) if lower_raw else []
 
         ov_w, ov_s, perim_s = _layer_flow(G, float(layer.height), k)
-        P = dict(G, base_spacing=ov_s, overhang_width=ov_w)
+        P = dict(G, base_spacing=ov_s, overhang_width=ov_w,
+                 perimeter_count=max(1, G["wall_loops"] - keep))
+        h = float(layer.height)
         layer_cut = []
         for island in islands:
             island_polys = to_polygons([island])
@@ -1072,14 +1158,18 @@ def _generate_object(ctx, p):
                     stats["narrow_kept"] += 1
                     if not diff(island_polys, island_lower):
                         continue
-            regions, residual = generate([island], island_lower, P)
+            regions, island_cut, walls = island_waves(island, island_polys, island_lower_raw, island_lower, P,
+                                                      keep, h / k, ext_w, inner_w, ov_w, perim_s)
             if not regions:
                 continue
-            zone = painted_overhang_zone(island_polys, island_lower_raw, residual, ov_w // 2)
-            clip_region = union(expand(zone, 1.5 * perim_s, JT_ROUND, 0.0) + residual)
-            fill_carve = (union(expand(zone, 1.25 * ov_w, JT_ROUND, 0.0) + expand(residual, ov_w // 2, JT_ROUND, 0.0))
-                          if zone else residual)
-            layer_cut += clip_region + fill_carve
+            layer_cut += island_cut
+            for role, width, pieces in walls:
+                w_mm = width * k
+                for pl in pieces:
+                    mm = [(x * k, y * k) for x, y in pl]
+                    entry["walls"].append({"role": role, "width": w_mm, "pts": mm,
+                                           "mm3_per_mm": h * (w_mm - h * (1.0 - 0.25 * math.pi))})
+                    stats["wall_mm"] += polyline_length(mm)
             for region in regions:
                 stats["regions"] += 1
                 for path in region:
@@ -1492,20 +1582,33 @@ def _calibrate(captured, gcode_layers):
 
 
 def _wave_block(layer_cap, state, cal, bbl, cfg, totals):
-    """G-code for the waves of one layer, leaving the stream state as found."""
-    w = cfg["line_width"]
+    """G-code for the waves (then the kept walls) of one layer, leaving the stream state as
+    found."""
     h = layer_cap["height"]
-    e_per_mm = cfg["flow_mm3_per_mm"] / (math.pi * (cfg["filament_diameter"] * 0.5) ** 2)
+    filament_area = math.pi * (cfg["filament_diameter"] * 0.5) ** 2
     retract = cfg["retract"]
-    f_print = cfg["print_speed"] * 60.0
     f_travel = cfg["travel_speed"] * 60.0
     hop_limit = cfg["connector_limit"]
 
-    out = [_TAG + "_START z=" + _fmt(layer_cap["z"]) + " paths=" + str(len(layer_cap["paths"])) + "\n"]
-    if bbl:
-        out += ["; FEATURE: Overhang wall\n", "; LINE_WIDTH: " + _fmt(w) + "\n", "; LAYER_HEIGHT: " + _fmt(h) + "\n"]
-    else:
-        out += [";TYPE:Overhang wall\n", ";WIDTH:" + _fmt(w) + "\n", ";HEIGHT:" + _fmt(h) + "\n"]
+    # (points, mm of filament per mm, feedrate, feature, line width, kind)
+    jobs = [(path, cfg["flow_mm3_per_mm"] / filament_area, cfg["print_speed"] * 60.0,
+             "Overhang wall", cfg["line_width"], "wave") for path in layer_cap["paths"]]
+    jobs += [(wall["pts"], wall["mm3_per_mm"] / filament_area, cfg["wall_speed"] * 60.0,
+              wall["role"], wall["width"], "wall") for wall in layer_cap.get("walls", [])]
+
+    out = [_TAG + "_START z=" + _fmt(layer_cap["z"]) + " paths=" + str(len(layer_cap["paths"]))
+           + (" walls=%d" % len(layer_cap["walls"]) if layer_cap.get("walls") else "") + "\n"]
+
+    def tags(feature, width):
+        if bbl:
+            return ["; FEATURE: " + feature + "\n", "; LINE_WIDTH: " + _fmt(width) + "\n",
+                    "; LAYER_HEIGHT: " + _fmt(h) + "\n"]
+        return [";TYPE:" + feature + "\n", ";WIDTH:" + _fmt(width) + "\n", ";HEIGHT:" + _fmt(h) + "\n"]
+
+    current_tags = None
+    if jobs:
+        out += tags(jobs[0][3], jobs[0][4])
+        current_tags = (jobs[0][3], jobs[0][4])
     if not state["e_relative"]:
         out.append("M83\n")
     fan_p = " P1" if bbl else ""
@@ -1531,7 +1634,10 @@ def _wave_block(layer_cap, state, cal, bbl, cfg, totals):
 
     pos = None
     retracted = entry_kind is not None
-    for path in layer_cap["paths"]:
+    for path, e_per_mm, f_print, feature, width, what in jobs:
+        if (feature, width) != current_tags:
+            out += tags(feature, width)
+            current_tags = (feature, width)
         pts = [(px + cal["dx"], py + cal["dy"]) for px, py in path]
         start = pts[0]
         short_hop = pos is not None and math.dist(pos, start) <= hop_limit
@@ -1553,8 +1659,12 @@ def _wave_block(layer_cap, state, cal, bbl, cfg, totals):
             if d < 1e-4:
                 continue
             out.append("G1 X%s Y%s E%.5f\n" % (_fmt(pt[0]), _fmt(pt[1]), d * e_per_mm))
-            totals["length_mm"] += d
             totals["filament_mm"] += d * e_per_mm
+            if what == "wave":
+                totals["length_mm"] += d
+            else:
+                totals["wall_mm"] = totals.get("wall_mm", 0.0) + d
+                totals["wall_s"] = totals.get("wall_s", 0.0) + d / max(f_print / 60.0, 0.1)
             prev = pt
         pos = prev
     if entry_kind is not None:
@@ -1570,6 +1680,23 @@ def _wave_block(layer_cap, state, cal, bbl, cfg, totals):
             out.append(tag_line if tag_line.endswith("\n") else tag_line + "\n")
     out.append(_TAG + "_END\n")
     return out
+
+
+def _wall_speed(ctx, p):
+    """mm/s for the kept walls: the plugin setting, else the slicer's speed for fully
+    overhanging walls (overhang_4_4_speed, mm/s or % of the outer wall speed), else its
+    bridge speed."""
+    if p["wall_speed_mm_s"] > 0:
+        return p["wall_speed_mm_s"]
+    outer = _first_float(ctx.config_value("outer_wall_speed"), 60.0)
+    raw = ctx.config_value("overhang_4_4_speed")
+    speed = 0.0
+    if raw is not None and _truthy(str(ctx.config_value("enable_overhang_speed")).split(",")[0]):
+        text = str(raw).replace(";", ",").split(",")[0].strip()
+        speed = _first_float(text, 0.0) * (outer / 100.0 if text.endswith("%") else 1.0)
+    if speed <= 0:
+        speed = _first_float(ctx.config_value("bridge_speed"), 25.0)
+    return max(speed, 1.0)
 
 
 def _post_process(lines, captures, survived, cfg):
@@ -1601,8 +1728,9 @@ def _inject_all(lines, captures, cfg, report):
                       "slices cut on %d layer(s)%s"
                       % (_object_name(cap, oid), cap["generated_at"], st["paths"], st["regions"],
                          st["wave_layers"], _fmt(st["length_mm"]), cap["cut_layers"],
-                         "; gentle slopes left to the slicer on %d island-layer(s)" % st["narrow_kept"]
-                         if st.get("narrow_kept") else ""))
+                         ("; gentle slopes left to the slicer on %d island-layer(s)" % st["narrow_kept"]
+                          if st.get("narrow_kept") else "")
+                         + ("; %s mm of kept wall" % _fmt(st["wall_mm"]) if st.get("wall_mm") else "")))
         if st["wave_layers"] and not cap["cut_layers"]:
             report.append("WARNING: %s: the slices were not cut, so the slicer's own walls/infill are still "
                           "there; re-slice from scratch with the plugin enabled" % _object_name(cap, oid))
@@ -1656,18 +1784,20 @@ def _inject_all(lines, captures, cfg, report):
     if not cfg["enabled"]:
         report.append("enabled = 0: report only")
         return
-    totals = {"length_mm": 0.0, "filament_mm": 0.0, "travel_mm": 0.0}
+    totals = {"length_mm": 0.0, "filament_mm": 0.0, "travel_mm": 0.0, "wall_mm": 0.0, "wall_s": 0.0}
     # Insert from the bottom of the file up so the earlier indices stay valid.
     plan.sort(key=lambda t: t[0], reverse=True)
     for end, cl, cal, state, line_width in plan:
         lines[end:end] = _wave_block(cl, state, cal, bbl, dict(cfg, line_width=line_width), totals)
     minutes = (totals["length_mm"] / max(cfg["print_speed"], 0.1)
-               + totals["travel_mm"] / max(cfg["travel_speed"], 0.1)) / 60.0
-    report.append("injected %d wave block(s): %s mm of wave line, %s mm of filament, about %s min"
-                  % (len(plan), _fmt(totals["length_mm"]), _fmt(totals["filament_mm"]), _fmt(minutes)))
+               + totals["travel_mm"] / max(cfg["travel_speed"], 0.1) + totals["wall_s"]) / 60.0
+    report.append("injected %d wave block(s): %s mm of wave line, %s mm of kept wall at %s mm/s, "
+                  "%s mm of filament, about %s min"
+                  % (len(plan), _fmt(totals["length_mm"]), _fmt(totals["wall_mm"]), _fmt(cfg.get("wall_speed", 0)),
+                     _fmt(totals["filament_mm"]), _fmt(minutes)))
 
 
-_VERSION = "0.3.0"
+_VERSION = "0.4.0"
 
 
 # ============================================================================
@@ -1777,6 +1907,7 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
             "print_speed":       max(p["print_speed_mm_s"], 0.1),
             "travel_speed":      max(p["travel_speed_mm_s"], 1.0),
             "fan_speed":         min(max(p["fan_speed_percent"], 0.0), 100.0),
+            "wall_speed":        _wall_speed(ctx, p),
             "connector_limit":   max(p["line_spacing_mm"], nozzle) + max(p["perimeter_overlap_mm"], 0.0),
             "line_width":        nozzle,
         }

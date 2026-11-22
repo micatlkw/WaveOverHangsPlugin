@@ -17,7 +17,7 @@ printing one object at a time.
    OrcaSlicer sees air underneath and prints a bridge, which becomes the floor on top of the
    waves.
 2. **When the G-code is exported**, the plugin adds the waves to each layer at slow speed with
-   full fan. It then puts back the slicer's own settings: retraction, fan, feed rate and
+   full fan, then one normal wall along the overhang's edge, laid against the waves. It then puts back the slicer's own settings: retraction, fan, feed rate and
    extrusion mode. A report goes at the top of the file.
 
 The waves are added at export, so **on non-Bambu printers the slicer's preview does not show
@@ -54,6 +54,7 @@ preset. Distances are in mm.
 |---|---|---|
 | `min_overhang_mm` | `0.5` | Overhang that reaches no further than this past the layer below keeps the slicer's normal walls. This is meant for gentle slopes: at 0.2 mm layers, 0.5 mm per layer is about 68° from vertical. Where such a slope joins an overhang that reaches further, the strip next to it is still waved, because the waves need it as their anchor. `0` waves every overhang, as the fork does. |
 | `min_length_mm` | `0` | Skip overhangs whose outline is shorter than this. |
+| `outer_walls` | `1` | Normal walls kept along the edge of a waved overhang, so its side looks like the rest of the object. They are printed right after the waves, innermost first, and the waves fill the area inside them. `0` runs the waves to the edge. At most the process's wall count. |
 | `enabled` | `1` | `0` only measures and writes the report. Nothing is cut and no waves are added. |
 
 ### Wave shape
@@ -78,7 +79,8 @@ preset. Distances are in mm.
 | `flow_mm3_per_mm` | `0.15` | Plastic per mm of wave line. It doesn't depend on the layer height. |
 | `print_speed_mm_s` | `2` | Wave printing speed. Waves are slow on purpose: each line has to cool against the one before it. |
 | `travel_speed_mm_s` | `40` | Travel speed between wave lines. |
-| `fan_speed_percent` | `100` | Part-cooling fan while printing waves. The slicer's fan setting is restored afterwards. |
+| `fan_speed_percent` | `100` | Part-cooling fan while printing waves and kept walls. The slicer's fan setting is restored afterwards. |
+| `wall_speed_mm_s` | `0` | Speed of the kept walls. `0` uses the slicer's speed for fully overhanging walls (Speed → Overhang speed, the 75–100% value), or its bridge speed if that isn't set. |
 
 These values come from the printer and filament profiles: nozzle diameter (used as the wave
 line width), retraction length (capped at 2 mm), filament diameter, relative/absolute E, wall
@@ -92,7 +94,7 @@ minutes of waves on its one overhang layer. The report gives the added time for 
 Example from a plate with three objects:
 
 ```
-; WAVE_OVERHANGS version 0.3.0; state hand-over: module global kept, capability instance kept
+; WAVE_OVERHANGS version 0.4.0; state hand-over: module global kept, capability instance kept
 ; WAVE_OVERHANGS OverhangWaveTest.stl (#0) generated at posSlice: 258 wave path(s) in 17 region(s) on 12 layer(s), 4210.381 mm; slices cut on 12 layer(s)
 ; WAVE_OVERHANGS G-code: standard tags, 110 layers, object labels: EXCLUDE_OBJECT_START/END, 4 instance(s)
 ; WAVE_OVERHANGS OverhangWaveTest.stl_id_0_copy_0: OverhangWaveTest.stl (#0), offset X 134.85 Y 186.214 mm (deviation from it: 90th percentile 0 mm, worst layer 0 mm; size mismatch 0 mm; 73 of 73 layers compared), waves on 12 layer(s)
@@ -130,8 +132,6 @@ Inside the file, each layer's waves sit between `; WAVE_OVERHANGS_START` and
   - waves are printed at the end of each object's part of the layer, not before that island's
     walls as in the fork;
   - the slicer's supports don't know about the waves.
-- **No outer wall** is kept over a waved overhang: the waves run to the edge. The fork can keep
-  one.
 - **Every overhang that isn't a gentle slope gets waves**, including ones the slicer could
   bridge. The fork can leave bridgeable overhangs as bridges, but plugins can't call the
   slicer's bridge detection.

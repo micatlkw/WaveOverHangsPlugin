@@ -53,6 +53,9 @@ def captures():
         for z in ZS:
             layers[w._zkey(z)] = {"z": z, "height": 0.2, "ref": (-h, -h, h, h),
                                   "paths": [list(o["path"])] if z == WAVE_Z else []}
+        if oid == 101:  # object A keeps one wall along its overhang edge
+            layers[w._zkey(WAVE_Z)]["walls"] = [{"role": "Outer wall", "width": 0.45, "mm3_per_mm": 0.08,
+                                                 "pts": [(-5.0, 6.5), (5.0, 6.5)]}]
         out[oid] = {"layers": layers, "line_width": 0.4, "cut_layers": 1, "generated_at": "posSlice",
                     "stats": {"paths": 1, "regions": 1, "wave_layers": 1, "length_mm": 2 * h},
                     "index": o["index"], "name": o["name"]}
@@ -100,7 +103,8 @@ def build(family, instances):
 
 
 CFG = {"enabled": True, "e_relative": True, "filament_diameter": 1.75, "retract": 0.8, "flow_mm3_per_mm": 0.15,
-       "print_speed": 2.0, "travel_speed": 40.0, "fan_speed": 100.0, "connector_limit": 0.5, "line_width": 0.4}
+       "print_speed": 2.0, "travel_speed": 40.0, "fan_speed": 100.0, "connector_limit": 0.5, "line_width": 0.4,
+       "wall_speed": 15.0}
 
 
 def blocks(lines):
@@ -129,6 +133,45 @@ def owner(lines, i, family):
     return key
 
 
+def check_blocks(lines, instances):
+    """Walls after the waves with their own tag, speed and flow; retraction balanced."""
+    problems = []
+    e_per_mm = 0.08 / (3.141592653589793 * 0.875 ** 2)
+    starts = [i for i, l in enumerate(lines) if l.startswith(w._TAG + "_START")]
+    walled = 0
+    for i in starts:
+        j = i
+        while not lines[j].startswith(w._TAG + "_END"):
+            j += 1
+        block = [l.strip() for l in lines[i:j]]
+        # the block ends by restoring the fan and the slicer's own tags; look before that
+        last_fan = max(n for n, l in enumerate(block) if l.startswith("M106") or l.startswith("M107"))
+        net = 0.0
+        for l in block:
+            m = re.match(r"G1 E(-?[\d.]+)", l)
+            if m:
+                net += float(m.group(1))
+        if abs(net) > 1e-6:
+            problems.append("block at line %d: retraction moves do not balance (%.5f)" % (i, net))
+        if ";TYPE:Outer wall" in block[:last_fan]:
+            walled += 1
+            k = block.index(";TYPE:Outer wall")
+            if any(l.startswith("G1 X") and " E" in l for l in block[k:]) is False:
+                problems.append("wall tag without wall moves")
+            if ";TYPE:Overhang wall" in block[k:]:
+                problems.append("waves after the wall")
+            if "G1 F900" not in block[k:]:
+                problems.append("wall not at 15 mm/s")
+            m = [l for l in block[k:] if re.match(r"G1 X\S+ Y\S+ E", l)]
+            e = float(re.search(r"E([\d.]+)", m[0]).group(1)) if m else 0
+            if abs(e - 10.0 * e_per_mm) > 1e-4:
+                problems.append("wall extrusion %.5f, expected %.5f" % (e, 10.0 * e_per_mm))
+    want = sum(1 for oid, _, _ in instances if oid == 101)
+    if walled != want:
+        problems.append("%d block(s) with a wall, expected %d" % (walled, want))
+    return problems
+
+
 def run(family, instances, expect_blocks):
     lines = build(family, instances)
     out, summary = w._post_process(list(lines), captures(), (True, True), dict(CFG))
@@ -145,6 +188,7 @@ def run(family, instances, expect_blocks):
             owners = sorted(owner(out, i, family) for i, _ in got)
             if None in owners or len(set(owners)) != len(owners):
                 problems.append("blocks not each inside their own instance's segment: %s" % owners)
+    problems += check_blocks(out, instances if expect_blocks else [])
     again, summary2 = w._post_process(list(out), captures(), (True, True), dict(CFG))
     if again != out:
         problems.append("second run changed the file")

@@ -93,7 +93,18 @@ overhang region is painted with (the region's extruder is not captured).
 v0.3.0: `min_overhang_mm` defaults to 0.5 (chosen after the multi-object print). README rewritten
 for users: install, every setting, the report, troubleshooting, known limits.
 
-## 10. Next
+## 10. Kept outer wall — done in code, not yet run in OrcaSlicer
 
-Outer wall kept over the overhang (setting); file the preview proposal; upstream API proposal
-for writable extrusions.
+v0.4.0: `outer_walls` (default 1, the fork's default) and `wall_speed_mm_s` (0 = the slicer's
+overhang 75–100% speed, else bridge speed). Tested outside OrcaSlicer:
+`tests/outer_wall_test.py` (walls on the edge, only where cut, waves inside them; 0 walls
+gives the old waves exactly), `tests/gcode_instances_test.py` (wall after the waves, its tag,
+speed and flow, retraction balanced), regression on the real files (no walls: identical).
+
+To check in OrcaSlicer: re-slice the 4-copy plate; the report's "generated" lines give mm of
+kept wall and the "injected" line the wall speed. On the G-code viewer each waved overhang
+should have a red outer wall along its edge right after the waves.
+
+## 11. Next
+
+File the preview proposal; upstream API proposal for writable extrusions.
