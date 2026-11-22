@@ -25,7 +25,9 @@ Current state:
   shrunk square's walls inside the waves, bridge + overhang wall over the whole disc ring at
   z=30.2 (the floor) and solid infill at z=30.4. Printed with the fork's defaults: the user
   reported it printed perfectly. A second model (cross, cone, stepped square, plate with
-  holes; 12 waved layers) also sliced correctly and printed well.
+  holes; 12 waved layers) also sliced correctly and printed well. v0.2.0 placed the waves of
+  three objects on one plate (Klipper exclude-object labels); with labels off it refused, as
+  designed.
 - `wave_overhang_spike_plugin.py` — the spike that proved the route (hand-over, offset
   calibration, retraction, `shrink` vs `delete`). Kept as reference; see "Spike" below.
 - `probes/` — dependency probes; pyclipper and shapely both install inside OrcaSlicer.
@@ -127,7 +129,12 @@ Facts that shaped the approach:
   passing ones ranked by layer coverage on both sides, then size mismatch and spread; ties
   broken by the object index in `_id_<n>_copy_` / `id:<n>` labels), which also gives its
   offset. Copies of one object are one `PrintObject` (same shape, different shift), so they
-  share a capture. The waves are inserted at the end of the copy's segment (inside its
+  share a capture. Separate but identical objects (copy/paste) are separate `PrintObject`s, but
+  Orca slices only the first and copies its layers to the others (`set_shared_object`,
+  `copy_layers_from_shared_object`): `execute()` never sees the others, they have no capture
+  of their own, and they get the first one's cut slices and match its capture. Verified in a
+  real run (two OverhangWaveTest objects + Assembly: 3 labelled instances, 2 captures, all
+  placed exactly). The waves are inserted at the end of the copy's segment (inside its
   exclude-object block, so cancelling the object also cancels its waves)
   as `;TYPE:Overhang wall`, at the configured flow (mm³/mm), speed and fan, with retraction,
   fan, E mode, feedrate and tags restored afterwards. Short hops between fronts (≤ the fork's

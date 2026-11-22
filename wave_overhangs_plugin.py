@@ -1602,7 +1602,9 @@ def _inject_all(lines, captures, cfg, report):
                          " (%d top layer(s) skipped)" % no_end if no_end else ""))
     for oid, cap in captures.items():
         if oid not in used and cap["stats"]["wave_layers"]:
-            report.append("%s: has waves but was not found in the G-code (another plate?)" % _object_name(cap, oid))
+            report.append("%s: has waves but was not placed (%s)"
+                          % (_object_name(cap, oid), "no object labels" if info["family"] is None
+                             else "not found in the G-code; another plate?"))
 
     if not cfg["enabled"]:
         report.append("enabled = 0: report only")
