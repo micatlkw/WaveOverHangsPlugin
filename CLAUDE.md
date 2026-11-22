@@ -24,7 +24,8 @@ Current state:
   region on z=30, slices cut on that layer only, exact calibration; the slicer printed the
   shrunk square's walls inside the waves, bridge + overhang wall over the whole disc ring at
   z=30.2 (the floor) and solid infill at z=30.4. Printed with the fork's defaults: the user
-  reported it printed perfectly.
+  reported it printed perfectly. A second model (cross, cone, stepped square, plate with
+  holes; 12 waved layers) also sliced correctly and printed well.
 - `wave_overhang_spike_plugin.py` — the spike that proved the route (hand-over, offset
   calibration, retraction, `shrink` vs `delete`). Kept as reference; see "Spike" below.
 - `probes/` — dependency probes; pyclipper and shapely both install inside OrcaSlicer.

@@ -24,4 +24,16 @@ overhang layer, 25 rings r 15.6–24.0 mm, retraction/fan/E state restored, idem
   floor are where they should be.
 - Done: printed the test model with the fork's defaults (2 mm/s waves, 0.15 mm³/mm, fan
   100 %; the wave layer adds about 16 min). The user reported it printed perfectly.
-- Then: models with several overhang layers (sloped/stacked overhangs) and holes.
+- Done: second test model (`OverhangWaveTest`: cross on a square post, cone, stepped square,
+  plate with two holes over a small post; 258 paths on 12 layers z 9.8–12.8). Waves follow
+  the slope layer by layer, stop at hole edges, every island waved separately, bridge floor
+  above each waved layer. The user reported the print looks good.
+- Report wording: the offset line now gives the 90th-percentile and the worst-layer deviation
+  (the old "90% of layers within 0 mm" read as if 10% disagreed; it never said that).
+
+## 5. Next: several objects / instances on the plate
+
+Today a second object or copy fails the offset check (nothing injected). Capture per object,
+calibrate per instance, inject every instance. Then: Bambu printer, wipe tower, by-object
+printing; settings (minimum overhang width, outer wall kept); README for users; upstream API
+proposal for writable extrusions (preview).
