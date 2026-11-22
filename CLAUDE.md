@@ -28,7 +28,7 @@ Current state:
   reported it printed perfectly. A second model (cross, cone, stepped square, plate with
   holes; 12 waved layers) also sliced correctly and printed well. v0.2.0 placed the waves of
   three objects on one plate (Klipper exclude-object labels); with labels off it refused, as
-  designed.
+  designed. A 4-copy plate (3 objects, one "+" copy) with `min_overhang_mm` = 0.5 printed OK.
 - `wave_overhang_spike_plugin.py` — the spike that proved the route (hand-over, offset
   calibration, retraction, `shrink` vs `delete`). Kept as reference; see "Spike" below.
 - `docs/upstream-proposal-preview-postprocess.md` — draft upstream proposal: run G-code

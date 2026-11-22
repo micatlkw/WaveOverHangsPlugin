@@ -71,7 +71,7 @@ slicer's walls on z 17.4–19.4 (edge growing 0.21–0.48 mm per layer) and is w
 (growth > 0.5) up to the shelf at z=20.2, on both copies; z=5.2 and z=10.2 unchanged. Its
 waves went from 17 layers / 183 paths to 6 layers / 150 paths. OverhangWaveTest unchanged: its
 cone grows 0.55 mm per layer, just above the threshold (0.6 would leave it to the slicer).
-Not printed.
+Printed (4 copies, 3 objects): the user reported it printed OK.
 
 ## 8. Next
 
