@@ -54,7 +54,19 @@ cached from the previous plate, where it was #2); indices are now refreshed on e
 step. Test Object's curved side is waved from where its edge grows ≥ ~0.2 mm per layer
 (z 17.4–20.0, 3–5 lines per layer), as the fork would: candidate for a minimum-overhang setting.
 
-## 6. Next
+## 6. Preview on non-Bambu printers — proposal drafted
 
-Bambu printer, wipe tower, by-object printing; settings (minimum overhang width, outer wall
-kept); README for users; upstream API proposal for writable extrusions (preview).
+`docs/upstream-proposal-preview-postprocess.md`: run plugins (not scripts) in place after
+slicing for all printers, as the Bambu path does, then `reload_gcode_moves()`. Not filed yet.
+
+## 7. Minimum overhang — done in code, not yet run in OrcaSlicer
+
+Plugin setting `min_overhang_mm` (default 0 = fork behaviour). Tested outside OrcaSlicer with
+`tests/min_overhang_test.py`. To check: slice the plate with Test Object 1 with
+`min_overhang_mm` = 0.5; its curved side (z 17.4–20.0, edge growing 0.2–1 mm per layer) should
+keep normal walls on the layers that grow less than 0.5 mm, and the z=20.2 shelf stay waved.
+
+## 8. Next
+
+Wipe tower, by-object printing; outer wall kept over the overhang (setting); README for users;
+upstream API proposal for writable extrusions.

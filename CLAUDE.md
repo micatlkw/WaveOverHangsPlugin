@@ -18,7 +18,8 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 
 Current state:
 
-- `wave_overhangs_plugin.py` — the plugin (v0.2.0: several objects and copies per plate). Ports the fork's generator with pyclipper
+- `wave_overhangs_plugin.py` — the plugin (v0.2.0: several objects and copies per plate;
+  optional `min_overhang_mm` for gentle slopes). Ports the fork's generator with pyclipper
   and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
   test model: 32 mm square column under a ~45 mm disc at z=30) worked: 71 wave paths in one
   region on z=30, slices cut on that layer only, exact calibration; the slicer printed the
@@ -30,6 +31,8 @@ Current state:
   designed.
 - `wave_overhang_spike_plugin.py` — the spike that proved the route (hand-over, offset
   calibration, retraction, `shrink` vs `delete`). Kept as reference; see "Spike" below.
+- `docs/upstream-proposal-preview-postprocess.md` — draft upstream proposal: run G-code
+  plugins after slicing for all printers so the preview shows their edits.
 - `probes/` — dependency probes; pyclipper and shapely both install inside OrcaSlicer.
 
 ## Commands
@@ -42,6 +45,8 @@ embedded Python (>= 3.12); it imports `orca`, which only exists inside the app.
   `python3 tests/generator_smoke.py [out.png]`
 - G-code half with several objects/copies and every label family:
   `python3 tests/gcode_instances_test.py`
+- Minimum-overhang setting (slope / shelf / slope joined to a shelf):
+  `python3 tests/min_overhang_test.py [out.png]`
 - A local venv with the test dependencies: `python3 -m venv .venv && .venv/bin/pip install
   pyclipper numpy matplotlib` (`.venv/` is excluded in `.git/info/exclude`).
 - Testing outside OrcaSlicer requires stubbing the `orca` module in `sys.modules` before loading
@@ -143,6 +148,12 @@ Facts that shaped the approach:
   as the fork prints them; this lets each front cool before the next is laid against it, at the
   cost of a retracted travel per path when the overhang has several sides.
 
+`min_overhang_mm` (plugin setting, default 0 = off): `island_support()` adds the gentle-slope
+part of an island's overhang to its lower layer before `generate()`, so the slicer keeps its
+own walls there. Gentle = within `min_overhang_mm` of the lower edge and not within
+`min_overhang_mm` of overhang that reaches further (that strip is a shelf's root, which its
+waves need as anchor band). Test: `python3 tests/min_overhang_test.py [out.png]`.
+
 Porting notes (things that are easy to get wrong):
 
 - Orca's offsets use a patched Clipper that drops input vertices closer than
@@ -158,7 +169,7 @@ Porting notes (things that are easy to get wrong):
 
 Differences from the fork (v0.2.0): no outer wall kept over the overhang
 (`wave_overhang_outer_perimeters` = 0); every overhang is waved (bridge detector not available
-to plugins); waves printed at the end of their copy's part of the layer; no floor-layer, Hilbert, temperature or
+to plugins) unless `min_overhang_mm` is set; waves printed at the end of their copy's part of the layer; no floor-layer, Hilbert, temperature or
 min-time features; top-layer overhangs skipped; by-object printing and wipe towers untested.
 
 ## Spike architecture (`wave_overhang_spike_plugin.py`)

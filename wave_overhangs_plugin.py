@@ -47,6 +47,9 @@ Differences from the fork (first version)
   the waves run to the edge.
 * Every overhang gets waves (wave_overhangs_instead_of_bridges = on); the fork's
   bridgeability test needs the slicer's bridge detector, which plugins cannot call.
+  Extra setting min_overhang_mm (default 0 = off, the fork's behaviour): overhang that
+  reaches no further than this beyond the layer below is left to the slicer's own walls,
+  except at the root of an overhang that reaches further.
 * Seeds follow Algorithm::wave_seeds (each anchoring contour expanded with square
   joins, clipped to the wave area); the generator's own fallback is kept as fallback.
 * Waves are printed at the end of their copy's part of the layer, not before that
@@ -80,6 +83,9 @@ _DEFAULTS = {
     "line_spacing_corner_mm":   0.18,
     "corner_taper_distance_mm": 3.0,
     "corner_angle_threshold":   90.0,
+    # Overhang areas that reach no further than this beyond the layer below keep the slicer's
+    # own walls (gentle slopes). 0 = wave every overhang, as the fork does.
+    "min_overhang_mm":          0.0,
     # Printing
     "flow_mm3_per_mm":          0.15,   # extrusion of a wave line, independent of layer height
     "print_speed_mm_s":         2.0,
@@ -993,6 +999,34 @@ def _layer_flow(G, height_mm, k):
     return sc(ov_w), sc(ov_s), sc(perim_spacing)
 
 
+def narrow_overhangs(island_polys, lower_raw, reach, min_area):
+    """The part of an island's overhang to leave to the slicer as a gentle slope.
+
+    The overhang (island minus the layer below) that lies within `reach` of the lower edge,
+    except where it is within `reach` of overhang that reaches further: there it is the
+    root of a shelf, which the waves of that shelf need as their anchor band.
+    """
+    if not lower_raw:
+        return []
+    overhang = diff(island_polys, lower_raw)
+    if not overhang:
+        return []
+    far = diff(overhang, expand(lower_raw, reach, JT_ROUND, 0.0))
+    narrow = diff(overhang, expand(far, reach, JT_ROUND, 0.0)) if far else overhang
+    return [p for p in narrow if abs(pc.Area(p)) > min_area or pc.Area(p) < 0]
+
+
+def island_support(island_polys, lower_raw, half_nozzle, min_overhang, min_area):
+    """(lower_raw, lower grown by half a nozzle, gentle slope found) for one island, with
+    the gentle-slope part of its overhang counted as supported, so the slicer keeps its own
+    walls there and the waves only cover what reaches further."""
+    narrow = narrow_overhangs(island_polys, lower_raw, min_overhang, min_area)
+    if not narrow:
+        return lower_raw, expand(lower_raw, half_nozzle) if lower_raw else [], False
+    raw = union(lower_raw + narrow)
+    return raw, expand(raw, half_nozzle), True
+
+
 def _generate_object(ctx, p):
     """Waves and cut zones for every layer of ctx.object, from the slices as they are now.
 
@@ -1002,10 +1036,11 @@ def _generate_object(ctx, p):
     k = orca.slicing.unscale(1)
     G = _gen_params(ctx, p, k)
     half_nozzle = int(round(G["nozzle_mm"] * 0.5 / k))
+    min_overhang = int(round(max(p["min_overhang_mm"], 0.0) / k))
 
     layers = {}
     cuts = {}
-    stats = {"wave_layers": 0, "regions": 0, "paths": 0, "length_mm": 0.0}
+    stats = {"wave_layers": 0, "regions": 0, "paths": 0, "length_mm": 0.0, "narrow_kept": 0}
     obj_layers = list(ctx.object.layers())
     islands_of = [None] * len(obj_layers)
     for idx, layer in enumerate(obj_layers):
@@ -1027,10 +1062,18 @@ def _generate_object(ctx, p):
             island_polys = to_polygons([island])
             if not diff(island_polys, lower):
                 continue  # fully supported
-            regions, residual = generate([island], lower, P)
+            island_lower_raw, island_lower = lower_raw, lower
+            if min_overhang > 0:
+                island_lower_raw, island_lower, kept = island_support(
+                    island_polys, lower_raw, half_nozzle, min_overhang, max(G["min_new_area"], 0.01 / (k * k)))
+                if kept:
+                    stats["narrow_kept"] += 1
+                    if not diff(island_polys, island_lower):
+                        continue
+            regions, residual = generate([island], island_lower, P)
             if not regions:
                 continue
-            zone = painted_overhang_zone(island_polys, lower_raw, residual, ov_w // 2)
+            zone = painted_overhang_zone(island_polys, island_lower_raw, residual, ov_w // 2)
             clip_region = union(expand(zone, 1.5 * perim_s, JT_ROUND, 0.0) + residual)
             fill_carve = (union(expand(zone, 1.25 * ov_w, JT_ROUND, 0.0) + expand(residual, ov_w // 2, JT_ROUND, 0.0))
                           if zone else residual)
@@ -1553,9 +1596,11 @@ def _inject_all(lines, captures, cfg, report):
     for oid, cap in captures.items():
         st = cap["stats"]
         report.append("%s generated at %s: %d wave path(s) in %d region(s) on %d layer(s), %s mm; "
-                      "slices cut on %d layer(s)"
+                      "slices cut on %d layer(s)%s"
                       % (_object_name(cap, oid), cap["generated_at"], st["paths"], st["regions"],
-                         st["wave_layers"], _fmt(st["length_mm"]), cap["cut_layers"]))
+                         st["wave_layers"], _fmt(st["length_mm"]), cap["cut_layers"],
+                         "; gentle slopes left to the slicer on %d island-layer(s)" % st["narrow_kept"]
+                         if st.get("narrow_kept") else ""))
         if st["wave_layers"] and not cap["cut_layers"]:
             report.append("WARNING: %s: the slices were not cut, so the slicer's own walls/infill are still "
                           "there; re-slice from scratch with the plugin enabled" % _object_name(cap, oid))
