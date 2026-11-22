@@ -57,7 +57,9 @@ Differences from the fork (first version)
 * Floor layers, Hilbert floors, per-wave temperature and minimum wave/layer times
   are not implemented; the bridge the slicer prints above is the floor.
 * Overhangs on the top layer get no waves (no following layer-change tag to
-  anchor the insertion on). By-object printing and wipe towers are untested.
+  anchor the insertion on). Works with wipe towers and by-object printing; when one
+  object uses two filaments on one layer, its waves use the filament active at the
+  end of that object's part of the layer.
 
 A report is written as "; WAVE_OVERHANGS ..." comment lines after the first line
 of the exported G-code.

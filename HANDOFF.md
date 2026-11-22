@@ -73,7 +73,22 @@ waves went from 17 layers / 183 paths to 6 layers / 150 paths. OverhangWaveTest 
 cone grows 0.55 mm per layer, just above the threshold (0.6 would leave it to the slicer).
 Printed (4 copies, 3 objects): the user reported it printed OK.
 
-## 8. Next
+## 8. Wipe tower and by-object printing — checked (sliced, not printed)
 
-Wipe tower, by-object printing; outer wall kept over the overhang (setting); README for users;
-upstream API proposal for writable extrusions.
+- Wipe tower (2 filaments, `enable_prime_tower` = 1, Test Object 1 alone): the tower and the
+  tool change come at the start of each layer, outside the object's exclude block (the tower
+  uses Bambu-style `; FEATURE: Prime tower` tags even in a standard file; harmless). All 6 wave
+  blocks sit inside the object's block after its own paths, so they print with the filament
+  the object used on that layer. Offset exact.
+- By object (`print_sequence` = by object, 4 copies, 320 layer tags): each copy's waves are
+  inserted inside its own block, on its own pass, with the nozzle at that layer's Z (checked
+  against the last G1 Z): 25 blocks, 0 problems.
+
+Known limit: when one object uses two filaments on the same layer, the waves print with the
+filament active at the end of that object's part of the layer, not necessarily the one the
+overhang region is painted with (the region's extruder is not captured).
+
+## 9. Next
+
+Outer wall kept over the overhang (setting); README for users; file the preview proposal;
+upstream API proposal for writable extrusions; decide the `min_overhang_mm` default.

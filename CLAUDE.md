@@ -170,7 +170,8 @@ Porting notes (things that are easy to get wrong):
 Differences from the fork (v0.2.0): no outer wall kept over the overhang
 (`wave_overhang_outer_perimeters` = 0); every overhang is waved (bridge detector not available
 to plugins) unless `min_overhang_mm` is set; waves printed at the end of their copy's part of the layer; no floor-layer, Hilbert, temperature or
-min-time features; top-layer overhangs skipped; by-object printing and wipe towers untested.
+min-time features; top-layer overhangs skipped; with two filaments on one layer of one object
+the waves use the filament active at the end of that object's part of the layer.
 
 ## Spike architecture (`wave_overhang_spike_plugin.py`)
 
