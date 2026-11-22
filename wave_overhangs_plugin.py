@@ -1392,8 +1392,10 @@ def _post_process(lines, captures, survived, cfg):
         report.append("G-code: %s tags, %d layers, %d matched by Z, %d usable for calibration"
                       % ("Bambu" if bbl else "standard", len(gcode_layers), cal["matched"], cal["samples"]))
         if "dx" in cal:
-            report.append("object->plate offset X %s Y %s mm (90%% of layers within %s mm, size mismatch %s mm)"
-                          % (_fmt(cal["dx"]), _fmt(cal["dy"]), _fmt(cal["spread_p90"]), _fmt(cal["size_mismatch"])))
+            report.append("object->plate offset X %s Y %s mm (deviation from it: 90th percentile %s mm,"
+                          " worst layer %s mm; size mismatch %s mm)"
+                          % (_fmt(cal["dx"]), _fmt(cal["dy"]), _fmt(cal["spread_p90"]),
+                             _fmt(cal["spread_max"]), _fmt(cal["size_mismatch"])))
         if not cal["ok"]:
             report.append("calibration FAILED: " + cal["why"] + "; nothing injected")
         elif not cfg["enabled"]:
