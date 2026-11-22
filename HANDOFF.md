@@ -42,7 +42,12 @@ from the file: same insertion points, every other line identical to v0.1.0's out
 Real run: OverhangWaveTest twice (copy/paste, so a second object sharing the first one's slicing)
 plus Assembly, Klipper labels: 3 instances placed at the EXCLUDE_OBJECT_DEFINE centres (deviation
 ≤ 0.001 mm), 25 wave blocks each inside its own object's block. Labels off: warning, nothing
-injected. Not printed. Not yet tried: a real second copy (the "+" instance button, `_copy_1`).
+injected. Not printed.
+Real second copy ("+" button, `Test_Object_1.stl_id_2_copy_1`): both copies share one capture,
+copy_1 placed at its EXCLUDE_OBJECT_DEFINE centre (shift 36.849, 44.622 from copy_0); its 17
+blocks have the same moves and extrusion as copy_0's, shifted (≤ 0.001 mm). Its blocks go in
+after the slicer's retract + wipe (before EXCLUDE_OBJECT_END) and before the z-hop of the next
+travel, so the nozzle is at layer height and retracted; the block un-retracts and re-retracts.
 Second real run (OverhangWaveTest, Assembly, the fork's "Test Object 1"; 110 layers): all three
 placed exactly, 30 blocks. The report showed a stale object number for Assembly (its steps were
 cached from the previous plate, where it was #2); indices are now refreshed on every slicing
