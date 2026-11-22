@@ -88,7 +88,12 @@ Known limit: when one object uses two filaments on the same layer, the waves pri
 filament active at the end of that object's part of the layer, not necessarily the one the
 overhang region is painted with (the region's extruder is not captured).
 
-## 9. Next
+## 9. Default and README — done
 
-Outer wall kept over the overhang (setting); README for users; file the preview proposal;
-upstream API proposal for writable extrusions; decide the `min_overhang_mm` default.
+v0.3.0: `min_overhang_mm` defaults to 0.5 (chosen after the multi-object print). README rewritten
+for users: install, every setting, the report, troubleshooting, known limits.
+
+## 10. Next
+
+Outer wall kept over the overhang (setting); file the preview proposal; upstream API proposal
+for writable extrusions.

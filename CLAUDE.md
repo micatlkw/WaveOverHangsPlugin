@@ -18,8 +18,8 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 
 Current state:
 
-- `wave_overhangs_plugin.py` — the plugin (v0.2.0: several objects and copies per plate;
-  optional `min_overhang_mm` for gentle slopes). Ports the fork's generator with pyclipper
+- `wave_overhangs_plugin.py` — the plugin (v0.3.0: several objects and copies per plate;
+  gentle slopes keep the slicer's walls, `min_overhang_mm` = 0.5). Ports the fork's generator with pyclipper
   and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
   test model: 32 mm square column under a ~45 mm disc at z=30) worked: 71 wave paths in one
   region on z=30, slices cut on that layer only, exact calibration; the slicer printed the
@@ -148,7 +148,7 @@ Facts that shaped the approach:
   as the fork prints them; this lets each front cool before the next is laid against it, at the
   cost of a retracted travel per path when the overhang has several sides.
 
-`min_overhang_mm` (plugin setting, default 0 = off): `island_support()` adds the gentle-slope
+`min_overhang_mm` (plugin setting, default 0.5 since v0.3.0; 0 = wave everything, as the fork): `island_support()` adds the gentle-slope
 part of an island's overhang to its lower layer before `generate()`, so the slicer keeps its
 own walls there. Gentle = within `min_overhang_mm` of the lower edge and not within
 `min_overhang_mm` of overhang that reaches further (that strip is a shelf's root, which its
@@ -167,9 +167,9 @@ Porting notes (things that are easy to get wrong):
 - `overhang_flow` is approximated from config (`thick_bridges`, `bridge_flow`,
   `inner_wall_line_width`); it only sets anchor/seed distances.
 
-Differences from the fork (v0.2.0): no outer wall kept over the overhang
+Differences from the fork (v0.3.0): no outer wall kept over the overhang
 (`wave_overhang_outer_perimeters` = 0); every overhang is waved (bridge detector not available
-to plugins) unless `min_overhang_mm` is set; waves printed at the end of their copy's part of the layer; no floor-layer, Hilbert, temperature or
+to plugins), except gentle slopes (`min_overhang_mm`, default 0.5); waves printed at the end of their copy's part of the layer; no floor-layer, Hilbert, temperature or
 min-time features; top-layer overhangs skipped; with two filaments on one layer of one object
 the waves use the filament active at the end of that object's part of the layer.
 

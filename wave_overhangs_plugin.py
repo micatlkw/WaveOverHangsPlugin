@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.2.0"
+# version = "0.3.0"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhangs -- slicing-pipeline plugin.
@@ -47,7 +47,7 @@ Differences from the fork (first version)
   the waves run to the edge.
 * Every overhang gets waves (wave_overhangs_instead_of_bridges = on); the fork's
   bridgeability test needs the slicer's bridge detector, which plugins cannot call.
-  Extra setting min_overhang_mm (default 0 = off, the fork's behaviour): overhang that
+  Extra setting min_overhang_mm (default 0.5; 0 = the fork's behaviour): overhang that
   reaches no further than this beyond the layer below is left to the slicer's own walls,
   except at the root of an overhang that reaches further.
 * Seeds follow Algorithm::wave_seeds (each anchoring contour expanded with square
@@ -87,7 +87,7 @@ _DEFAULTS = {
     "corner_angle_threshold":   90.0,
     # Overhang areas that reach no further than this beyond the layer below keep the slicer's
     # own walls (gentle slopes). 0 = wave every overhang, as the fork does.
-    "min_overhang_mm":          0.0,
+    "min_overhang_mm":          0.5,
     # Printing
     "flow_mm3_per_mm":          0.15,   # extrusion of a wave line, independent of layer height
     "print_speed_mm_s":         2.0,
@@ -1667,7 +1667,7 @@ def _inject_all(lines, captures, cfg, report):
                   % (len(plan), _fmt(totals["length_mm"]), _fmt(totals["filament_mm"]), _fmt(minutes)))
 
 
-_VERSION = "0.2.0"
+_VERSION = "0.3.0"
 
 
 # ============================================================================
