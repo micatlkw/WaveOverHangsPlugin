@@ -18,9 +18,9 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 
 Current state:
 
-- `wave_overhangs_plugin.py` — the plugin (v0.4.0: several objects and copies per plate;
+- `wave_overhangs_plugin.py` — the plugin (v0.5.0: several objects and copies per plate;
   gentle slopes keep the slicer's walls, `min_overhang_mm` = 0.5; one wall kept along the
-  overhang's edge, `outer_walls` = 1). Ports the fork's generator with pyclipper
+  edge of wide overhangs, `outer_walls` = 1). Ports the fork's generator with pyclipper
   and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
   test model: 32 mm square column under a ~45 mm disc at z=30) worked: 71 wave paths in one
   region on z=30, slices cut on that layer only, exact calibration; the slicer printed the
@@ -48,7 +48,7 @@ embedded Python (>= 3.12); it imports `orca`, which only exists inside the app.
   `python3 tests/gcode_instances_test.py`
 - Minimum-overhang setting (slope / shelf / slope joined to a shelf):
   `python3 tests/min_overhang_test.py [out.png]`
-- Kept walls (cantilever / ring / plate with a hole, 0–2 walls):
+- Kept walls (cantilever / ring / plate with a hole / narrow band / band + shelf, 0–2 walls):
   `python3 tests/outer_wall_test.py [out.png]`
 - A local venv with the test dependencies: `python3 -m venv .venv && .venv/bin/pip install
   pyclipper numpy matplotlib` (`.venv/` is excluded in `.git/info/exclude`).
@@ -158,14 +158,19 @@ own walls there. Gentle = within `min_overhang_mm` of the lower edge and not wit
 waves need as anchor band). Test: `python3 tests/min_overhang_test.py [out.png]`.
 
 `outer_walls` (default 1, capped at `wall_loops`), as the fork's `wave_overhang_outer_perimeters`:
-`island_waves()` grows the waves in the island shrunk by `outer_walls` perimeter spacings (the
-fork's `wave_infill`) and with `perimeter_count = wall_loops - outer_walls`; the cut zone is
+`wall_side()` picks the overhang that reaches past `outer_walls` perimeter spacings plus two wave
+spacings (with its root, like `narrow_overhangs()`); only there are walls kept. `island_waves()`
+then grows the waves in the island minus the walls' band along that part (the fork's
+`wave_infill`, restricted) with `perimeter_count = wall_loops - outer_walls`, or, when no part
+is wide enough or nothing is waved that way, in the whole island with no walls (narrow, steep
+overhangs are waved to the edge: with a wall they would get no waves at all). The cut zone is
 unchanged (it already reaches the edge). `kept_walls()` draws the wall centre lines (outer at
 `outer_wall_line_width / 2` from the edge, then Orca's ext/perimeter spacings), clipped to the
 island's cut zone, so they run exactly where the slicer's walls were removed. The plugin prints
 them in the same block right after the waves (innermost first, outer last), tagged Outer/Inner
 wall, with Orca's flow for that width and layer height, at `wall_speed_mm_s` (0 = the slicer's
-`overhang_4_4_speed`, or `bridge_speed` if unset). The fork prints the waves before the
+`overhang_4_4_speed`, or `bridge_speed` if unset). Where a wall ends next to an overhang waved to
+the edge, those waves pass the wall's end. The fork prints the waves before the
 island's walls too, so the walls are laid against them in both.
 
 Porting notes (things that are easy to get wrong):
@@ -181,8 +186,8 @@ Porting notes (things that are easy to get wrong):
 - `overhang_flow` is approximated from config (`thick_bridges`, `bridge_flow`,
   `inner_wall_line_width`); it only sets anchor/seed distances.
 
-Differences from the fork (v0.4.0): the kept walls (`outer_walls`, default 1) are drawn and
-printed by the plugin, not the slicer's own wall paths; every overhang is waved (bridge detector not available
+Differences from the fork (v0.5.0): the kept walls (`outer_walls`, default 1) are drawn and
+printed by the plugin, not the slicer's own wall paths, and only along wide overhangs; every overhang is waved (bridge detector not available
 to plugins), except gentle slopes (`min_overhang_mm`, default 0.5); waves printed at the end of their copy's part of the layer; no floor-layer, Hilbert, temperature or
 min-time features; top-layer overhangs skipped; with two filaments on one layer of one object
 the waves use the filament active at the end of that object's part of the layer.

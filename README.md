@@ -17,7 +17,8 @@ printing one object at a time.
    OrcaSlicer sees air underneath and prints a bridge, which becomes the floor on top of the
    waves.
 2. **When the G-code is exported**, the plugin adds the waves to each layer at slow speed with
-   full fan, then one normal wall along the overhang's edge, laid against the waves. It then puts back the slicer's own settings: retraction, fan, feed rate and
+   full fan, then (on wide overhangs) one normal wall along the overhang's edge, laid against
+   the waves. It then puts back the slicer's own settings: retraction, fan, feed rate and
    extrusion mode. A report goes at the top of the file.
 
 The waves are added at export, so **on non-Bambu printers the slicer's preview does not show
@@ -54,7 +55,7 @@ preset. Distances are in mm.
 |---|---|---|
 | `min_overhang_mm` | `0.5` | Overhang that reaches no further than this past the layer below keeps the slicer's normal walls. This is meant for gentle slopes: at 0.2 mm layers, 0.5 mm per layer is about 68° from vertical. Where such a slope joins an overhang that reaches further, the strip next to it is still waved, because the waves need it as their anchor. `0` waves every overhang, as the fork does. |
 | `min_length_mm` | `0` | Skip overhangs whose outline is shorter than this. |
-| `outer_walls` | `1` | Normal walls kept along the edge of a waved overhang, so its side looks like the rest of the object. They are printed right after the waves, innermost first, and the waves fill the area inside them. `0` runs the waves to the edge. At most the process's wall count. An overhang has to reach past the kept walls (about 0.4 mm each) plus half a nozzle to get waves; narrower ones are left to the slicer, as in the fork. |
+| `outer_walls` | `1` | Normal walls kept along the edge of wide overhangs, so their side looks like the rest of the object. They are printed right after the waves, innermost first, and the waves fill the area inside them. Chosen automatically per overhang: a wall is kept only where the overhang reaches past it plus two wave lines (about 1.1 mm per layer with the defaults, roughly 80° from vertical at 0.2 mm layers), so the waves inside can carry it. Steeper, narrower overhangs are waved right to the edge, and where one joins a wide overhang only the wide part gets a wall. `0` never keeps a wall. At most the process's wall count. |
 | `enabled` | `1` | `0` only measures and writes the report. Nothing is cut and no waves are added. |
 
 ### Wave shape
@@ -94,7 +95,7 @@ minutes of waves on its one overhang layer. The report gives the added time for 
 Example from a plate with three objects:
 
 ```
-; WAVE_OVERHANGS version 0.4.0; state hand-over: module global kept, capability instance kept
+; WAVE_OVERHANGS version 0.5.0; state hand-over: module global kept, capability instance kept
 ; WAVE_OVERHANGS OverhangWaveTest.stl (#0) generated at posSlice: 258 wave path(s) in 17 region(s) on 12 layer(s), 4210.381 mm; slices cut on 12 layer(s)
 ; WAVE_OVERHANGS G-code: standard tags, 110 layers, object labels: EXCLUDE_OBJECT_START/END, 4 instance(s)
 ; WAVE_OVERHANGS OverhangWaveTest.stl_id_0_copy_0: OverhangWaveTest.stl (#0), offset X 134.85 Y 186.214 mm (deviation from it: 90th percentile 0 mm, worst layer 0 mm; size mismatch 0 mm; 73 of 73 layers compared), waves on 12 layer(s)

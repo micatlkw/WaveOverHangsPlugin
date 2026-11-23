@@ -3,8 +3,11 @@
     python3 tests/outer_wall_test.py [out.png]
 
 Needs pyclipper and numpy (matplotlib for the optional picture). Runs island_waves(), the
-per-island step of the slicing hook, on three overhangs with 0, 1 and 2 kept walls, and checks:
+per-island step of the slicing hook, on five overhangs with 0, 1 and 2 kept walls, and checks:
   - no walls with 0, and the waves are then the same as without the setting;
+  - walls only where the overhang reaches past the walls plus two wave lines: none on a
+    narrow band (a steep cone), which is waved to the edge instead, and on a band joined
+    to a shelf only along the shelf;
   - the walls follow the island's edge (outer wall centre ext_w/2 inside it), only where the
     slicer's walls were cut, innermost first;
   - the waves stay inside the walls.
@@ -35,7 +38,12 @@ CASES = {
     "cantilever 30x10 on 10x10": ((g.rect(0, 0, 30, 10), []), [g.rect(0, 0, 10, 10)]),
     "ring: disc r24 on disc r16": ((g.circle(24), []), [g.circle(16)]),
     "plate with a hole on a post": ((g.rect(-12, -12, 12, 12), [square_hole(5, 5, 2)]), [g.rect(-3, -3, 3, 3)]),
+    "narrow band: disc r16.55 on r16": ((g.circle(16.55), []), [g.circle(16)]),
+    "band + shelf: 10x10 +0.55, shelf": ((w.union(w.expand([g.rect(0, 0, 10, 10)], int(0.55 * S))
+                                                  + [g.rect(10, 2, 16, 8)])[0], []), [g.rect(0, 0, 10, 10)]),
 }
+NO_WALLS = {"narrow band: disc r16.55 on r16"}
+SHELF_ONLY = {"band + shelf: 10x10 +0.55, shelf"}
 
 
 def seg_dist(p, a, b):
@@ -53,7 +61,7 @@ def edge_dist(p, polys):
 def run(island, lower_raw, keep):
     island_polys = w.to_polygons([island])
     lower = w.expand(lower_raw, HALF_NOZZLE)
-    P_keep = dict(P, perimeter_count=max(1, 2 - keep))
+    P_keep = dict(P, perimeter_count=2, wall_loops=2)
     return w.island_waves(island, island_polys, lower_raw, lower, P_keep, keep, H, EXT_W, INNER_W, OV_W, PERIM_S)
 
 
@@ -74,7 +82,16 @@ def main():
                     problems.append("walls with outer_walls = 0")
                 if waves != base:
                     problems.append("waves differ from the plain generator")
+            elif name in NO_WALLS:
+                if walls:
+                    problems.append("walls on a narrow overhang")
+                if waves != base:
+                    problems.append("narrow overhang not waved to the edge as with 0 walls")
             else:
+                if name in SHELF_ONLY:
+                    xs = [pt[0] / S for _, _, pls in walls for pl in pls for pt in pl]
+                    if xs and min(xs) < 9.0:
+                        problems.append("wall reaches x=%.2f, away from the shelf (x >= 10)" % min(xs))
                 if len(walls) != keep:
                     problems.append("%d wall level(s), expected %d" % (len(walls), keep))
                 roles = [role for role, _, _ in walls]
@@ -89,11 +106,17 @@ def main():
                 stray = [pt for pl in outer for pt in pl if not w.intersection_pl([[pt, (pt[0] + 1, pt[1])]], cut_u)]
                 if stray:
                     problems.append("%d outer wall point(s) outside the cut" % len(stray))
-                inner_most = (EXT_W / 2 + (keep - 1) * PERIM_S) / S
-                wd = [edge_dist(pt, island_polys) / S for pl in waves for pt in pl]
-                if wd and min(wd) < inner_most - 0.11:
-                    problems.append("waves reach %.3f mm from the edge, inside the walls (innermost wall at %.3f)"
-                                    % (min(wd), inner_most))
+                # Waves overlap the innermost wall by perimeter_overlap (0.1): along a wall, wave
+                # and wall centres stay about (0.45 + 0.4) / 2 - 0.1 = 0.325 mm apart (less at
+                # corners). Where a wall ends, waves that run to the edge pass its end; skip
+                # 0.5 mm at each wall end.
+                wall_lines = [pl for _, _, pls in walls for pl in pls]
+                ends = [pl[0] for pl in wall_lines] + [pl[-1] for pl in wall_lines]
+                wd = [min(seg_dist(pt, pl[i - 1], pl[i]) for pl in wall_lines for i in range(1, len(pl))) / S
+                      for pl in waves for pt in pl
+                      if min(math.dist(pt, e) for e in ends) > 0.5 * S] if wall_lines else []
+                if wd and min(wd) < 0.25:
+                    problems.append("waves come %.3f mm from a wall centre line (expected >= 0.25)" % min(wd))
             wall_mm = sum(w.polyline_length(pl) for _, _, pls in walls for pl in pls) / S
             ok &= not problems
             print("%s %-28s outer_walls=%d: %3d wave path(s), %6.1f mm of wall in %d piece(s)"

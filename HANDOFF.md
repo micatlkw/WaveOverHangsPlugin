@@ -113,6 +113,14 @@ so overhangs growing less than that plus half a nozzle get no waves: OverhangWav
 (0.55 mm per layer) and Test Object's z=19.6 are now left to the slicer (5 instead of 12 waved
 layers on OverhangWaveTest), as the fork does with `wave_overhang_outer_perimeters` = 1. Not printed.
 
-## 11. Next
+## 11. Wall or waves chosen per overhang — done in code, not yet run in OrcaSlicer
+
+v0.5.0: walls are kept only where the overhang reaches past them plus two wave lines (~1.1 mm
+per layer, ~80° at 0.2 mm layers); narrower overhangs are waved to the edge, so the cone and
+Test Object's z=19.6 should be waved again (as in v0.3.0) while shelves keep their wall.
+`tests/outer_wall_test.py` covers a narrow band (no wall, same waves as `outer_walls` = 0) and a
+band joined to a shelf (wall only along the shelf and its root).
+
+## 12. Next
 
 File the preview proposal; upstream API proposal for writable extrusions.

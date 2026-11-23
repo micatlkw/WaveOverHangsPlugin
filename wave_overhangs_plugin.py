@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.4.0"
+# version = "0.5.0"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhangs -- slicing-pipeline plugin.
@@ -46,7 +46,9 @@ Differences from the fork (first version)
 * The walls kept along the overhang's edge (outer_walls, the fork's
   wave_overhang_outer_perimeters, default 1) are printed by the plugin right after
   the waves, along the island's edge where the slicer's own walls were cut away. The
-  fork keeps the slicer's own wall paths instead.
+  fork keeps the slicer's own wall paths instead. Walls are kept only along overhang
+  that reaches past them plus two wave lines; the fork keeps them on every overhang,
+  which leaves narrow (steep) overhangs with no waves at all.
 * Every overhang gets waves (wave_overhangs_instead_of_bridges = on); the fork's
   bridgeability test needs the slicer's bridge detector, which plugins cannot call.
   Extra setting min_overhang_mm (default 0.5; 0 = the fork's behaviour): overhang that
@@ -90,8 +92,10 @@ _DEFAULTS = {
     # Overhang areas that reach no further than this beyond the layer below keep the slicer's
     # own walls (gentle slopes). 0 = wave every overhang, as the fork does.
     "min_overhang_mm":          0.5,
-    # Normal walls kept along the overhang's edge, printed right after the waves and against
-    # them (the fork's wave_overhang_outer_perimeters). 0 = waves run to the edge.
+    # Normal walls kept along the edge of wide overhangs, printed right after the waves and
+    # against them (the fork's wave_overhang_outer_perimeters). Only where the overhang reaches
+    # past the walls plus two wave lines; narrower (steep) overhangs are waved to the edge.
+    # 0 = waves always run to the edge.
     "outer_walls":              1,
     # Speed of those walls; 0 = the slicer's speed for fully overhanging walls
     # (overhang_4_4_speed), or its bridge speed when that is not set.
@@ -1087,16 +1091,48 @@ def kept_walls(island_polys, cut, count, height, ext_w, inner_w, perim_s):
     return out
 
 
-def island_waves(island, island_polys, lower_raw, lower, P, keep, height, ext_w, inner_w, ov_w, perim_s):
+def wall_side(island_polys, lower_raw, keep, perim_s, wave_spacing, min_area):
+    """The part of an island's overhang that is wide enough to keep walls along its edge.
+
+    A wall is kept only where the overhang reaches past the walls plus two wave lines, so
+    the waves inside still carry it: shelves keep their wall; steep narrow overhangs (a cone
+    growing half a millimetre per layer) would be all wall over air, so they are waved to
+    the edge instead. Returns the overhang pieces that reach that far, with their roots.
+    """
+    if keep <= 0 or not lower_raw:
+        return []
+    reach = keep * perim_s + 2 * wave_spacing
+    overhang = diff(island_polys, lower_raw)
+    if not overhang:
+        return []
+    far = [p for p in diff(overhang, expand(lower_raw, reach, JT_ROUND, 0.0)) if abs(pc.Area(p)) > min_area]
+    if not far:
+        return []
+    return intersection(overhang, expand(far, reach, JT_ROUND, 0.0))
+
+
+def island_waves(island, island_polys, lower_raw, lower, P, keep, height, ext_w, inner_w, ov_w, perim_s,
+                 min_area=0.0):
     """Waves, cut zone and kept walls of one island (all scaled).
 
-    Returns (regions, cut polygons, walls); regions is empty when nothing is waved.
+    `keep` walls are kept along the edge of the wide parts of the overhang (wall_side());
+    elsewhere the waves run to the edge. Returns (regions, cut polygons, walls); regions is
+    empty when nothing is waved.
     """
-    # With kept walls the waves fill the island shrunk by them (the fork's wave_infill).
-    wave_area = union_ex(shrink(island_polys, keep * perim_s)) if keep else [island]
-    if not wave_area:
-        return [], [], []
-    regions, residual = generate(wave_area, lower, P)
+    wall_loops = P.get("wall_loops", P["perimeter_count"] + keep)
+    wide = wall_side(island_polys, lower_raw, keep, perim_s, P["wave_spacing"] or P["base_spacing"], min_area)
+    regions = []
+    if wide:
+        # The waves fill the island minus the walls' band along the wide overhang (the
+        # fork's wave_infill, restricted to where walls are kept).
+        band = diff(island_polys, shrink(island_polys, keep * perim_s))
+        wall_band = intersection(band, expand(wide, perim_s, JT_ROUND, 0.0))
+        wave_area = union_ex(diff(island_polys, wall_band))
+        if wave_area:
+            regions, residual = generate(wave_area, lower, dict(P, perimeter_count=max(1, wall_loops - keep)))
+    if not regions:
+        wide = []
+        regions, residual = generate([island], lower, dict(P, perimeter_count=max(1, wall_loops)))
     if not regions:
         return [], [], []
     zone = painted_overhang_zone(island_polys, lower_raw, residual, ov_w // 2)
@@ -1104,7 +1140,10 @@ def island_waves(island, island_polys, lower_raw, lower, P, keep, height, ext_w,
     fill_carve = (union(expand(zone, 1.25 * ov_w, JT_ROUND, 0.0) + expand(residual, ov_w // 2, JT_ROUND, 0.0))
                   if zone else residual)
     cut = clip_region + fill_carve
-    walls = kept_walls(island_polys, union(cut), keep, height, ext_w, inner_w, perim_s) if keep else []
+    walls = []
+    if wide:
+        wall_cut = intersection(union(cut), expand(wide, perim_s, JT_ROUND, 0.0))
+        walls = kept_walls(island_polys, wall_cut, keep, height, ext_w, inner_w, perim_s)
     return regions, cut, walls
 
 
@@ -1142,8 +1181,7 @@ def _generate_object(ctx, p):
         lower = expand(lower_raw, half_nozzle) if lower_raw else []
 
         ov_w, ov_s, perim_s = _layer_flow(G, float(layer.height), k)
-        P = dict(G, base_spacing=ov_s, overhang_width=ov_w,
-                 perimeter_count=max(1, G["wall_loops"] - keep))
+        P = dict(G, base_spacing=ov_s, overhang_width=ov_w)
         h = float(layer.height)
         layer_cut = []
         for island in islands:
@@ -1159,7 +1197,8 @@ def _generate_object(ctx, p):
                     if not diff(island_polys, island_lower):
                         continue
             regions, island_cut, walls = island_waves(island, island_polys, island_lower_raw, island_lower, P,
-                                                      keep, h / k, ext_w, inner_w, ov_w, perim_s)
+                                                      keep, h / k, ext_w, inner_w, ov_w, perim_s,
+                                                      max(G["min_new_area"], 0.01 / (k * k)))
             if not regions:
                 continue
             layer_cut += island_cut
@@ -1797,7 +1836,7 @@ def _inject_all(lines, captures, cfg, report):
                      _fmt(totals["filament_mm"]), _fmt(minutes)))
 
 
-_VERSION = "0.4.0"
+_VERSION = "0.5.0"
 
 
 # ============================================================================
