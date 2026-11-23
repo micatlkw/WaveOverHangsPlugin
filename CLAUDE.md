@@ -18,7 +18,7 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 
 Current state:
 
-- `wave_overhangs_plugin.py` — the plugin (v0.5.0: several objects and copies per plate;
+- `wave_overhangs_plugin.py` — the plugin (v0.6.0: several objects and copies per plate;
   gentle slopes keep the slicer's walls, `min_overhang_mm` = 0.5; one wall kept along the
   edge of wide overhangs, `outer_walls` = 1). Ports the fork's generator with pyclipper
   and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
@@ -48,6 +48,7 @@ embedded Python (>= 3.12); it imports `orca`, which only exists inside the app.
   `python3 tests/gcode_instances_test.py`
 - Minimum-overhang setting (slope / shelf / slope joined to a shelf):
   `python3 tests/min_overhang_test.py [out.png]`
+- Notification, support toggle and log (fake host): `python3 tests/notifications_test.py`
 - Kept walls (cantilever / ring / plate with a hole / narrow band / band + shelf, 0–2 walls):
   `python3 tests/outer_wall_test.py [out.png]`
 - A local venv with the test dependencies: `python3 -m venv .venv && .venv/bin/pip install
@@ -172,6 +173,22 @@ wall, with Orca's flow for that width and layer height, at `wall_speed_mm_s` (0 
 `overhang_4_4_speed`, or `bridge_speed` if unset). Where a wall ends next to an overhang waved to
 the edge, those waves pass the wall's end. The fork prints the waves before the
 island's walls too, so the walls are laid against them in both.
+
+User feedback (v0.6.0, borrowed from the Support Fins plugin in `../support-fins/plugins/orca`):
+
+- **Notification**: `execute()` runs on the slicing worker, where UI calls can deadlock, so
+  `_note()` queues lines (posSlice: one per object that got waves; G-code step: the added time
+  and any problems) and `on_lifecycle_event` shows them with `orca.host.ui.push_notification`
+  when `LifecycleEvent.SlicingJobComplete` fires on the UI thread (it fires after slicing, and
+  again after an export, which runs in the same background job). Warning level if any line is a
+  warning (stays until closed), else Important (20 s). A cancelled job shows nothing, a failed
+  one only its warnings; lines older than 10 min are dropped (post-processing outside a job,
+  e.g. saving a 3MF with G-code, would otherwise surface on the next slice).
+- **Per-object toggle**: `apply_to` = `unsupported` (default) leaves objects with
+  `enable_support` on alone (`PrintObject.config_value`); they still get a capture (layers and
+  wall boxes, no waves) so their copies are matched and reported, not flagged as unplaceable.
+- **Log**: `_write_log()` appends JSON lines to `wave_overhangs_log.jsonl` next to the plugin
+  file (slice: object, stats, settings, time; G-code: report lines). Best effort.
 
 Porting notes (things that are easy to get wrong):
 

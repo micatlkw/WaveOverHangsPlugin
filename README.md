@@ -41,8 +41,14 @@ shows the waves and the real print time.
    **Label objects** (Others → G-code output). The plugin needs these labels to tell copies
    apart. Without them it only handles a plate with a single object.
 4. Save the process preset.
-5. Slice and export. The first lines of the exported G-code start with `; WAVE_OVERHANGS`;
-   check them (see [The report](#the-report)).
+5. Slice. A notification in the bottom-right of the 3D view says which objects got waves.
+   Export, and a second notification gives the time the waves add, or says what went wrong.
+   The full report is in the first lines of the exported G-code (see [The report](#the-report)).
+
+**Which objects get waves:** every object whose **Enable support** (Support settings, or the
+object's own settings) is off. Turn Orca's supports on for an object and the plugin leaves it
+alone, so the support toggle chooses between supports and waves for each object. To wave every
+object regardless, set `apply_to` to `all`.
 
 ## Settings
 
@@ -56,6 +62,7 @@ preset. Distances are in mm.
 | `min_overhang_mm` | `0.5` | Overhang that reaches no further than this past the layer below keeps the slicer's normal walls. This is meant for gentle slopes: at 0.2 mm layers, 0.5 mm per layer is about 68° from vertical. Where such a slope joins an overhang that reaches further, the strip next to it is still waved, because the waves need it as their anchor. `0` waves every overhang, as the fork does. |
 | `min_length_mm` | `0` | Skip overhangs whose outline is shorter than this. |
 | `outer_walls` | `1` | Normal walls kept along the edge of wide overhangs, so their side looks like the rest of the object. They are printed right after the waves, innermost first, and the waves fill the area inside them. Chosen automatically per overhang: a wall is kept only where the overhang reaches past it plus two wave lines (about 1.1 mm per layer with the defaults, roughly 80° from vertical at 0.2 mm layers), so the waves inside can carry it. Steeper, narrower overhangs are waved right to the edge, and where one joins a wide overhang only the wide part gets a wall. `0` never keeps a wall. At most the process's wall count. |
+| `apply_to` | `unsupported` | `unsupported`: objects with Orca's **Enable support** on are left alone. `all`: wave every object. |
 | `enabled` | `1` | `0` only measures and writes the report. Nothing is cut and no waves are added. |
 
 ### Wave shape
@@ -92,7 +99,16 @@ minutes of waves on its one overhang layer. The report gives the added time for 
 
 ## The report
 
-Example from a plate with three objects:
+**Notifications.** When slicing finishes, OrcaSlicer shows one line per object that got waves
+(how many layers and roughly how long), and whether gentle slopes or walls were kept. When the
+G-code is exported, it shows the time the waves add. Problems, such as objects that couldn't be
+placed, show as a warning that stays until you close it.
+
+**Log.** Each slice and export also adds a line to `wave_overhangs_log.jsonl`, next to the
+installed plugin file, with the full details (settings, counts, report). Please attach it to bug
+reports.
+
+**In the G-code.** Example from a plate with three objects:
 
 ```
 ; WAVE_OVERHANGS version 0.5.0; state hand-over: module global kept, capability instance kept
@@ -122,6 +138,7 @@ Inside the file, each layer's waves sit between `; WAVE_OVERHANGS_START` and
 | `no captured object matches (...)` | The plugin couldn't place that copy, so it gets no waves. Slice again. If it persists, please report it with the G-code. |
 | `has waves but was not placed` | That object is not in this G-code, for example because it is on another plate. |
 | `already processed, left untouched` | The file already had waves. The plugin never adds them twice. |
+| `Orca supports are on, left alone` | That object has **Enable support** on, so it gets no waves. Turn supports off for it, or set `apply_to` to `all`. |
 
 ## Known limits
 

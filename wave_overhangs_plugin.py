@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.5.0"
+# version = "0.6.0"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhangs -- slicing-pipeline plugin.
@@ -70,7 +70,10 @@ of the exported G-code.
 """
 import json
 import math
+import os
 import re
+import threading
+import time
 
 import numpy as np
 import orca
@@ -107,8 +110,12 @@ _DEFAULTS = {
     "fan_speed_percent":        100,
     # 0: measure and report only, change nothing (slices are left uncut too)
     "enabled":                  1,
+    # "unsupported": objects with Orca's "Enable support" on are left alone, so the per-object
+    # support toggle chooses between supports and waves. "all": wave every object.
+    "apply_to":                 "unsupported",
 }
 _PATTERNS = ("smart", "monotonic", "zigzag")
+_CHOICES = {"pattern": _PATTERNS, "apply_to": ("unsupported", "all")}
 
 _WALL_ROLES = ("Outer wall", "Inner wall", "Overhang wall")
 _TAG = "; WAVE_OVERHANGS"
@@ -116,6 +123,63 @@ _TAG = "; WAVE_OVERHANGS"
 # Hand-over store, object id -> capture (plain values only). Kept at module level and
 # on the capability instance; the spike verified both survive until post-processing.
 _STATE = {}
+
+# Results shown as an OrcaSlicer notification when the slicing job completes. execute() runs on
+# the slicing worker, where UI calls can deadlock; on_lifecycle_event runs on the UI thread.
+_NOTES = []
+_NOTES_LOCK = threading.Lock()
+_NOTE_LINES = 8
+_LOG_NAME = "wave_overhangs_log.jsonl"
+
+
+_NOTE_MAX_AGE_S = 600
+
+
+def _note(text, level="info"):
+    """Queue one line for the next notification; level "info", "slice" (info about a slice)
+    or "warning"."""
+    with _NOTES_LOCK:
+        _NOTES.append((text, level, time.time()))
+
+
+def _take_notes():
+    """The queued lines, oldest first, without those older than _NOTE_MAX_AGE_S (left by a
+    step that ran outside a slicing job, such as saving a project with its G-code)."""
+    now = time.time()
+    with _NOTES_LOCK:
+        notes = [(text, level) for text, level, t in _NOTES if now - t <= _NOTE_MAX_AGE_S]
+        _NOTES.clear()
+    return notes
+
+
+def notification_text(notes):
+    lines = [text for text, _ in notes[:_NOTE_LINES]]
+    rest = len(notes) - _NOTE_LINES
+    if rest > 0:
+        lines.append("... and %d more (see %s next to the plugin)" % (rest, _LOG_NAME))
+    return "\n".join(lines)
+
+
+def notification_level(notes):
+    """Warnings stay until closed; otherwise Important (20 s; Regular fades after 10 s)."""
+    if any(level == "warning" for _, level in notes):
+        return "WarningNotificationLevel"
+    return "ImportantNotificationLevel"
+
+
+def _minutes_text(minutes):
+    return "under a minute" if minutes < 0.5 else "about %d min" % int(round(minutes))
+
+
+def _write_log(entry):
+    """Append one JSON line to the log next to the plugin. Best effort, never fails a slice."""
+    try:
+        entry = dict(entry, time=time.strftime("%Y-%m-%d %H:%M:%S"), version=_VERSION)
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), _LOG_NAME)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+    except Exception:
+        pass
 
 
 # ============================================================================
@@ -133,7 +197,7 @@ def _params(self):
     for key, default in _DEFAULTS.items():
         if isinstance(default, str):
             value = str(src.get(key, default)).strip().lower()
-            out[key] = value if value in _PATTERNS else default
+            out[key] = value if value in _CHOICES.get(key, ()) else default
             continue
         try:
             out[key] = float(src[key])
@@ -1147,8 +1211,9 @@ def island_waves(island, island_polys, lower_raw, lower, P, keep, height, ext_w,
     return regions, cut, walls
 
 
-def _generate_object(ctx, p):
+def _generate_object(ctx, p, waves=True):
     """Waves and cut zones for every layer of ctx.object, from the slices as they are now.
+    With waves=False only the layers are recorded (an object left alone).
 
     Returns (capture, cuts): capture holds plain values; cuts maps a layer index to the
     scaled polygons to cut out of that layer's slices.
@@ -1175,7 +1240,7 @@ def _generate_object(ctx, p):
         entry = {"z": float(layer.print_z), "height": float(layer.height), "ref": None, "paths": [],
                  "walls": []}
         layers[_zkey(layer.print_z)] = entry
-        if idx == 0 or not islands:
+        if idx == 0 or not islands or not waves:
             continue
         lower_raw = to_polygons(islands_of[idx - 1] or [])
         lower = expand(lower_raw, half_nozzle) if lower_raw else []
@@ -1738,8 +1803,10 @@ def _wall_speed(ctx, p):
     return max(speed, 1.0)
 
 
-def _post_process(lines, captures, survived, cfg):
-    """Returns (new_lines, summary). `captures` is {object id: capture}."""
+def _post_process(lines, captures, survived, cfg, notes=None):
+    """Returns (new_lines, summary). `captures` is {object id: capture}. Lines for the user's
+    notification are appended to `notes` as (text, level)."""
+    notes = [] if notes is None else notes
     report = ["version %s; state hand-over: module global %s, capability instance %s"
               % (_VERSION, "kept" if survived[0] else "LOST", "kept" if survived[1] else "LOST")]
     if any(line.startswith(_TAG) for line in lines[:200]):
@@ -1748,7 +1815,7 @@ def _post_process(lines, captures, survived, cfg):
     if not captures:
         report.append("nothing captured at slice time (re-slice with the plugin selected): nothing injected")
     else:
-        _inject_all(lines, captures, cfg, report)
+        _inject_all(lines, captures, cfg, report, notes)
 
     stamp = [_TAG + " " + text + "\n" for text in report]
     lines[1 if lines else 0:1 if lines else 0] = stamp
@@ -1760,8 +1827,11 @@ def _object_name(cap, oid):
     return "%s (#%s)" % (name, cap["index"]) if cap.get("index") is not None else "%s (id %s)" % (name, oid)
 
 
-def _inject_all(lines, captures, cfg, report):
+def _inject_all(lines, captures, cfg, report, notes):
     for oid, cap in captures.items():
+        if cap.get("skipped"):
+            report.append("%s: %s, left alone" % (_object_name(cap, oid), cap["skipped"]))
+            continue
         st = cap["stats"]
         report.append("%s generated at %s: %d wave path(s) in %d region(s) on %d layer(s), %s mm; "
                       "slices cut on %d layer(s)%s"
@@ -1773,6 +1843,8 @@ def _inject_all(lines, captures, cfg, report):
         if st["wave_layers"] and not cap["cut_layers"]:
             report.append("WARNING: %s: the slices were not cut, so the slicer's own walls/infill are still "
                           "there; re-slice from scratch with the plugin enabled" % _object_name(cap, oid))
+            notes.append(("Wave Overhangs, %s: no waves added, the slicer reused an earlier slice. Change the "
+                          "layer height and back to slice it again." % cap.get("name", "object"), "warning"))
 
     segments, info = _scan_gcode(lines, cfg["e_relative"])
     bbl = info["bbl"]
@@ -1784,6 +1856,8 @@ def _inject_all(lines, captures, cfg, report):
         report.append("WARNING: %d objects but the G-code has no object labels; turn on 'Exclude objects' "
                       "or 'Label objects' (process settings, Others) so each copy can be placed"
                       % len(captures))
+        notes.append(("Wave Overhangs: no waves added. With several objects, turn on Exclude objects or "
+                      "Label objects (Others > G-code output).", "warning"))
 
     plan = []  # (end line index, layer capture, calibration, end state)
     used = set()
@@ -1793,6 +1867,9 @@ def _inject_all(lines, captures, cfg, report):
         if oid is None:
             report.append("%s: no captured object matches (%s); skipped"
                           % (name, cal.get("why", "calibration failed")))
+            if info["family"] is not None or len(captures) == 1:
+                notes.append(("Wave Overhangs: couldn't place %s, so it got no waves. Slice again; if it "
+                              "persists, see %s." % (name, _LOG_NAME), "warning"))
             continue
         used.add(oid)
         cap = captures[oid]
@@ -1834,9 +1911,12 @@ def _inject_all(lines, captures, cfg, report):
                   "%s mm of filament, about %s min"
                   % (len(plan), _fmt(totals["length_mm"]), _fmt(totals["wall_mm"]), _fmt(cfg.get("wall_speed", 0)),
                      _fmt(totals["filament_mm"]), _fmt(minutes)))
+    if plan:
+        notes.append(("Wave Overhangs: waves added to the exported G-code, %s of printing."
+                      % _minutes_text(minutes), "info"))
 
 
-_VERSION = "0.5.0"
+_VERSION = "0.6.0"
 
 
 # ============================================================================
@@ -1898,15 +1978,44 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
                 else:
                     target[oid]["index"] = position[oid]
 
+    @staticmethod
+    def _skip_reason(ctx, p):
+        """Why this object is left alone, or None."""
+        if p["apply_to"] == "unsupported":
+            try:
+                if _truthy(ctx.object.config_value("enable_support")):
+                    return "Orca supports are on"
+            except Exception:
+                pass
+        return None
+
     def _slice(self, ctx):
         p = _params(self)
-        cap, cuts = _generate_object(ctx, p)
+        started = time.time()
+        skip = self._skip_reason(ctx, p)
+        cap, cuts = _generate_object(ctx, p, waves=skip is None)
         if ctx.cancelled():
             return orca.ExecutionResult.success()
-        if p["enabled"]:
+        if skip:
+            cap["skipped"] = skip
+        elif p["enabled"]:
             cap["cut_layers"] = _cut_slices(ctx, cuts)
         self._remember(ctx, cap)
         st = cap["stats"]
+        name = cap.get("name") or "object"
+        _write_log({"event": "slice", "object": name, "skipped": skip, "stats": st,
+                    "cut_layers": cap["cut_layers"], "seconds": round(time.time() - started, 2), "settings": p})
+        if skip:
+            return orca.ExecutionResult.success("Wave Overhangs: %s left alone (%s)" % (name, skip))
+        if st["wave_layers"]:
+            text = ("Wave Overhangs, %s: waves on %d layer(s), %s"
+                    % (name, st["wave_layers"],
+                       _minutes_text(st["length_mm"] / max(p["print_speed_mm_s"], 0.1) / 60.0)))
+            if st.get("wall_mm"):
+                text += ", with a wall along the wide overhangs"
+            if st.get("narrow_kept"):
+                text += "; gentle slopes keep normal walls"
+            _note(text, "slice")
         return orca.ExecutionResult.success(
             "Wave Overhangs: %d wave path(s) on %d layer(s); slices cut on %d layer(s)"
             % (st["paths"], st["wave_layers"], cap["cut_layers"]))
@@ -1921,8 +2030,12 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
         if cap is None:
             # posSlice was cached from before the plugin was active: the slices can no
             # longer be cut, so generate for the report only and inject nothing.
-            cap, _ = _generate_object(ctx, _params(self))
+            p = _params(self)
+            skip = self._skip_reason(ctx, p)
+            cap, _ = _generate_object(ctx, p, waves=skip is None)
             cap["generated_at"] = "posPerimeters (posSlice was cached)"
+            if skip:
+                cap["skipped"] = skip
             for entry in cap["layers"].values():
                 entry["paths"] = []
         if ctx.cancelled():
@@ -1953,11 +2066,40 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
         with open(ctx.gcode_path, "r", encoding="utf-8", errors="surrogateescape", newline="") as f:
             lines = f.readlines()
         before = list(lines)
-        lines, summary = _post_process(lines, captures, survived, cfg)
+        notes = []
+        started = time.time()
+        lines, summary = _post_process(lines, captures, survived, cfg, notes)
         if lines != before:
             with open(ctx.gcode_path, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
                 f.writelines(lines)
+        report = [l[len(_TAG) + 1:].rstrip("\n") for l in lines[1:40] if l.startswith(_TAG + " ")]
+        _write_log({"event": "gcode", "file": ctx.output_name or ctx.gcode_path, "report": report,
+                    "seconds": round(time.time() - started, 2)})
+        for text, level in notes:
+            _note(text, level)
         return orca.ExecutionResult.success("Wave Overhangs: " + summary)
+
+    def on_lifecycle_event(self, event, ctx):
+        """Show the queued results when the slicing job (slice, or slice + export) completes.
+        Orca fires SlicingJobComplete on the UI thread; a cancelled job shows nothing and a
+        failed one only its warnings."""
+        try:
+            ev = getattr(orca, "LifecycleEvent", None)
+            if ev is None or event != ev.SlicingJobComplete:
+                return
+            notes = _take_notes()
+            code = getattr(orca, "LifecycleEvtCode", None)
+            if code is not None and getattr(ctx, "code", None) != code.Ok:
+                notes = [n for n in notes if n[1] == "warning"] if ctx.code == code.Error else []
+            if not notes:
+                return
+            if any(level == "slice" for _, level in notes) and not any("exported G-code" in t for t, _ in notes):
+                notes.append(("The waves are added to the G-code when it is exported; except on Bambu printers "
+                              "the preview doesn't show them.", "info"))
+            ui = orca.host.ui
+            ui.push_notification(getattr(ui.NotificationLevel, notification_level(notes)), notification_text(notes))
+        except Exception as e:  # never break Orca over a notification
+            _write_log({"event": "notification", "error": "%s: %s" % (type(e).__name__, e)})
 
 
 @orca.plugin

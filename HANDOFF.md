@@ -127,6 +127,16 @@ Real run (OverhangWaveTest + Test Object 1, v0.5.0): 18 wave blocks, 540 mm of k
 with no wall: the cone (z 11.0–12.6, 4 lines per layer, as in v0.3.0) and Test Object's
 z 19.6–20.0. Both kinds on one layer at z=10.8 and z=12.8. Not printed.
 
-## 12. Next
+## 12. Notification, per-object toggle, log — done in code, not yet run in OrcaSlicer
 
-File the preview proposal; upstream API proposal for writable extrusions.
+v0.6.0 (ideas from the Support Fins plugin): results shown as an OrcaSlicer notification when
+slicing / export completes; objects with Orca supports on are left alone (`apply_to`); a JSON-lines
+log next to the plugin. `tests/notifications_test.py` covers them against a fake host. To check
+in OrcaSlicer: the notification appears after slicing and after export; an object with Enable
+support on gets no waves and the report says so; `wave_overhangs_log.jsonl` appears next to the
+installed plugin.
+
+## 13. Next
+
+Add the "why not edit the slices" paragraph to the preview proposal and file it; upstream API
+proposal for writable extrusions; publish to the Orca Cloud plugin hub.
