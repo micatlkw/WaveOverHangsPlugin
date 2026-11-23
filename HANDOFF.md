@@ -153,7 +153,22 @@ can a pipeline plugin open a panel; does the notification link work; message siz
 Fallback if a pipeline plugin can't: a second script-plugin capability in the same file owns the
 panel.
 
+Step 0 result (Windows, OrcaSlicer's WebView2): a pipeline plugin CAN open a dock panel from
+`on_lifecycle_event(SlicingJobComplete)`; the page is Chromium 107 (Edge) with WebGL2 (Intel Arc,
+100k lines drawn in 24 ms); ping round trip 4 ms; plugin-to-page messages arrive intact up to
+2 million numbers (0.7 s), so no chunking is needed. Not tested: the notification link reopening a
+panel, and a second slice (the user did not report them); step 4 will exercise both.
+
+Step 1 done: `extract_preview(lines, e_relative)` in the plugin returns per layer the wave lines
+("w"), kept walls ("k") and the slicer's outer/overhang walls as context ("c"), flat x,y lists in
+mm, plate coordinates, context and walls simplified at 0.02 mm. `tests/preview_extract_test.py`:
+wave and kept-wall lengths equal the report on all 9 real files (within 0.05 mm of waves);
+data is small (20k-46k numbers, 0.3 MB for a whole plate).
+
 ## 14. Next
 
-After step 0: steps 1-3 can be built and tested without OrcaSlicer. Also: add the "second window"
-sentence to the preview proposal; README note for macOS; v0.6.0 check in OrcaSlicer; push.
+Steps 2-3: the panel page (WebGL: orbit/zoom/pan, layer-range slider, layer-only top view, colours
+by kind) as a string in the plugin, tested headlessly with Chrome (installed here) on data from
+real files. Then step 4 (notification link, reopen, refresh after export, setting) and step 5.
+Also: add the "second window" sentence to the preview proposal; README note for macOS; v0.6.0
+check in OrcaSlicer; push.

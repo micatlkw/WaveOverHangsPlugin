@@ -1786,6 +1786,93 @@ def _wave_block(layer_cap, state, cal, bbl, cfg, totals):
     return out
 
 
+# ============================================================================
+# preview data (for the preview panel)
+# ============================================================================
+
+def extract_preview(lines, e_relative, tol_mm=0.02):
+    """Per-layer toolpaths of the final G-code for the preview panel.
+
+    Returns {"layers": [{"z", "w", "k", "c"}], "bbox", "stats"}. In each layer "w" are the wave
+    lines, "k" the walls kept along wide overhangs (both between the WAVE_OVERHANGS_START/END
+    markers) and "c" the slicer's own outer and overhang walls as context. Every entry is a list
+    of polylines, each a flat [x0, y0, x1, y1, ...] in mm, in G-code (plate) coordinates.
+    Context and kept walls are simplified with Douglas-Peucker at `tol_mm`.
+    """
+    bbl = any(l.startswith("; CHANGE_LAYER") for l in lines[:20000])
+    stream = _Stream(e_relative, bbl)
+    layers = []
+    cur = None
+    want_z = False
+    in_wave = False
+    kind = None
+    pts = []
+    stats = {"wave_mm": 0.0, "wall_mm": 0.0, "numbers": 0}
+    lo = [1e18, 1e18]
+    hi = [-1e18, -1e18]
+
+    def flush():
+        nonlocal kind, pts
+        if kind is not None and cur is not None and len(pts) >= 2:
+            line = pts if kind == "w" else douglas_peucker(pts, tol_mm)
+            length = polyline_length(line)
+            if kind == "w":
+                stats["wave_mm"] += length
+            elif kind == "k":
+                stats["wall_mm"] += length
+            flat = [round(v, 2) for point in line for v in point]
+            cur[kind].append(flat)
+            stats["numbers"] += len(flat)
+            for x, y in line:
+                lo[0], lo[1] = min(lo[0], x), min(lo[1], y)
+                hi[0], hi[1] = max(hi[0], x), max(hi[1], y)
+        kind, pts = None, []
+
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith(";"):
+            body = line[1:]
+            if _is_layer_tag(line):
+                flush()
+                cur = None
+                want_z = True
+            elif want_z and (body.startswith(" Z_HEIGHT: ") or body.startswith("Z:")):
+                try:
+                    cur = {"z": float(body.split(":", 1)[1]), "w": [], "k": [], "c": []}
+                    layers.append(cur)
+                except ValueError:
+                    cur = None
+                want_z = False
+            elif line.startswith(_TAG + "_START"):
+                flush()
+                in_wave = True
+            elif line.startswith(_TAG + "_END"):
+                flush()
+                in_wave = False
+        mv = stream.feed(raw)
+        if mv is None or cur is None or not mv["moved"]:
+            continue
+        if not mv["extruding"] or None in (mv["x0"], mv["y0"], mv["x1"], mv["y1"]):
+            flush()     # a travel ends the polyline
+            continue
+        feature = stream.feature
+        if in_wave:
+            k = "w" if feature == "Overhang wall" else ("k" if feature in ("Outer wall", "Inner wall") else None)
+        else:
+            k = "c" if feature in ("Outer wall", "Overhang wall") else None
+        if k is None:
+            flush()
+            continue
+        start = (mv["x0"], mv["y0"])
+        if k != kind or not pts or math.dist(pts[-1], start) > 1e-3:
+            flush()
+            kind, pts = k, [start]
+        pts.append((mv["x1"], mv["y1"]))
+    flush()
+    return {"layers": layers, "bbox": [lo[0], lo[1], hi[0], hi[1]] if layers and lo[0] < 1e17 else None,
+            "stats": stats}
+
+
 def _wall_speed(ctx, p):
     """mm/s for the kept walls: the plugin setting, else the slicer's speed for fully
     overhanging walls (overhang_4_4_speed, mm/s or % of the outer wall speed), else its
