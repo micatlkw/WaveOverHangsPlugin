@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.7.0"
+# version = "0.7.1"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhangs -- slicing-pipeline plugin.
@@ -131,6 +131,7 @@ _STATE = {}
 # "title", "fresh"}. "fresh" is true until the next notification has offered it. Module global and
 # capability instance, like the captures.
 _PREVIEW = None
+_SEEN_EVENTS = set()     # lifecycle events already traced in the log (the first of each, and every SlicingJobComplete)
 
 # Results shown as an OrcaSlicer notification when the slicing job completes. execute() runs on
 # the slicing worker, where UI calls can deadlock; on_lifecycle_event runs on the UI thread.
@@ -2337,7 +2338,7 @@ def _inject_all(lines, captures, cfg, report, notes):
                       % _minutes_text(minutes), "info"))
 
 
-_VERSION = "0.7.0"
+_VERSION = "0.7.1"
 
 
 # ============================================================================
@@ -2568,6 +2569,10 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
         failed one only its warnings. After an export that added waves the notification offers
         "Show waves", and an open preview panel is refreshed."""
         try:
+            name = str(event)
+            if name not in _SEEN_EVENTS or "SlicingJobComplete" in name:
+                _SEEN_EVENTS.add(name)
+                _write_log({"event": "lifecycle", "which": name, "code": str(getattr(ctx, "code", None))})
             ev = getattr(orca, "LifecycleEvent", None)
             if ev is None or event != ev.SlicingJobComplete:
                 return
@@ -2582,6 +2587,8 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
                 pv["fresh"] = False
                 if self.panel is not None and self.panel.is_open():
                     self.show_preview()
+            _write_log({"event": "slicing_complete", "completed": completed, "notes": len(notes),
+                        "fresh": bool(fresh), "texts": [t for t, _ in notes][:4]})
             if not notes:
                 return
             if any(level == "slice" for _, level in notes) and not any("exported G-code" in t for t, _ in notes):
@@ -2593,6 +2600,7 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
                 ui.push_notification(level, notification_text(notes), "Show waves", self._link_clicked)
             else:
                 ui.push_notification(level, notification_text(notes))
+            _write_log({"event": "notification_pushed", "level": notification_level(notes), "link": bool(fresh)})
         except Exception as e:  # never break Orca over a notification
             _write_log({"event": "notification", "error": "%s: %s" % (type(e).__name__, e)})
 
