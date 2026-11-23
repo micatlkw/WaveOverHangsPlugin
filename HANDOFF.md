@@ -175,10 +175,21 @@ with `{command: "preview_ready"}` and expects `{command: "preview", layers, bbox
 colours are where they should be and that waves can be hidden (all pass; also on synthetic data).
 Not covered by the test: mouse orbit/pan/zoom, the sliders and buttons (wired up, not clicked).
 
-## 14. Next
+## 14. Preview panel wired into the plugin — done in code, not yet run in OrcaSlicer
 
-Step 4: the plugin side. Keep the extracted data after export (module global + instance, like
-the captures), reply to `preview_ready`, open the panel from a "Show waves" link in the export
-notification (and a setting `preview` to turn it off), reuse an open panel, refresh it after each
-export. Then step 5 (README, `CLAUDE.md`, v0.7.0). Also: add the "second window" sentence to the
-preview proposal; README note for macOS; v0.6.0 check in OrcaSlicer; push.
+v0.7.0: step 4 done. After an export that added waves, the notification has a "Show waves" link;
+the panel opens docked on the right, asks for its data and draws it; a later export refreshes an
+open panel; `preview` = 0 turns it off. `tests/notifications_test.py` covers the link, opening,
+reuse, refresh, reopening after close and the cases that drop the data. README and `CLAUDE.md`
+updated (step 5).
+
+To check in OrcaSlicer: slice and export a plate with waves; the second notification should have
+"Show waves"; click it; the panel should show the plate (try Layer view, the sliders, the
+"waves" jump buttons, mouse orbit/pan/zoom, which no test has clicked); export again with the
+panel open and it should refresh. Also the v0.6.0 checks (notifications, Enable support toggle,
+log file).
+
+## 15. Next
+
+Check v0.7.0 in OrcaSlicer, fix what the mouse/slider use turns up, then push and tag v0.7.0.
+Also: add the "second window" sentence to the preview proposal; README note for macOS.

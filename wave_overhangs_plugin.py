@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.6.0"
+# version = "0.7.0"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhangs -- slicing-pipeline plugin.
@@ -113,6 +113,9 @@ _DEFAULTS = {
     # "unsupported": objects with Orca's "Enable support" on are left alone, so the per-object
     # support toggle chooses between supports and waves. "all": wave every object.
     "apply_to":                 "unsupported",
+    # 1: after an export, the notification offers "Show waves": a panel beside the 3D view that
+    # draws the exported G-code's waves (the slicer's preview does not show them).
+    "preview":                  1,
 }
 _PATTERNS = ("smart", "monotonic", "zigzag")
 _CHOICES = {"pattern": _PATTERNS, "apply_to": ("unsupported", "all")}
@@ -123,6 +126,11 @@ _TAG = "; WAVE_OVERHANGS"
 # Hand-over store, object id -> capture (plain values only). Kept at module level and
 # on the capability instance; the spike verified both survive until post-processing.
 _STATE = {}
+
+# Data for the preview panel from the last export that added waves: {"data": extract_preview(),
+# "title", "fresh"}. "fresh" is true until the next notification has offered it. Module global and
+# capability instance, like the captures.
+_PREVIEW = None
 
 # Results shown as an OrcaSlicer notification when the slicing job completes. execute() runs on
 # the slicing worker, where UI calls can deadlock; on_lifecycle_event runs on the UI thread.
@@ -2329,7 +2337,7 @@ def _inject_all(lines, captures, cfg, report, notes):
                       % _minutes_text(minutes), "info"))
 
 
-_VERSION = "0.6.0"
+_VERSION = "0.7.0"
 
 
 # ============================================================================
@@ -2488,29 +2496,103 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
         report = [l[len(_TAG) + 1:].rstrip("\n") for l in lines[1:40] if l.startswith(_TAG + " ")]
         _write_log({"event": "gcode", "file": ctx.output_name or ctx.gcode_path, "report": report,
                     "seconds": round(time.time() - started, 2)})
+        self._store_preview(ctx, p, lines, lines != before, cfg["e_relative"])
         for text, level in notes:
             _note(text, level)
         return orca.ExecutionResult.success("Wave Overhangs: " + summary)
 
+    # --- preview panel -------------------------------------------------------------------------
+    panel = None
+
+    def _store_preview(self, ctx, p, lines, changed, e_relative):
+        """Keep the data for the preview panel from this export (worker thread: no UI here)."""
+        global _PREVIEW
+        data = None
+        if not changed and any(l.startswith(_TAG) for l in lines[:200]):
+            return      # the file already had its waves (an export of the same file): keep what we have
+        if p["preview"] != 0 and changed:
+            started = time.time()
+            try:
+                pv = extract_preview(lines, e_relative)
+                if pv["stats"]["wave_mm"] > 0:
+                    data = {"data": pv, "fresh": True,
+                            "title": os.path.basename(str(ctx.output_name or ctx.gcode_path))}
+                    _write_log({"event": "preview_data", "numbers": pv["stats"]["numbers"],
+                                "layers": len(pv["layers"]), "seconds": round(time.time() - started, 2)})
+            except Exception as e:
+                _write_log({"event": "preview_data", "error": "%s: %s" % (type(e).__name__, e)})
+        _PREVIEW = data
+        self._preview_state = data
+
+    def _preview(self):
+        return _PREVIEW or getattr(self, "_preview_state", None)
+
+    def _preview_payload(self):
+        pv = self._preview()
+        return None if pv is None else dict(pv["data"], command="preview", title=pv["title"])
+
+    def show_preview(self):
+        """Open the preview panel, or bring the open one to the front and send it the latest data.
+        UI thread (the notification link, the lifecycle event)."""
+        payload = self._preview_payload()
+        if payload is None:
+            return "no preview data"
+        if self.panel is not None and self.panel.is_open():
+            self.panel.show()
+            self.panel.post(payload)
+            return "preview panel refreshed"
+        self.panel = orca.host.ui.create_dock_panel(
+            html=PREVIEW_PAGE, title="Wave preview", width=480, height=640,
+            on_message=self._panel_message, on_close=self._panel_closed, dock="right")
+        return "preview panel opened"
+
+    def _panel_message(self, message):
+        if (message or {}).get("command") == "preview_ready":
+            payload = self._preview_payload()
+            if payload is not None and self.panel is not None:
+                self.panel.post(payload)
+
+    def _panel_closed(self):
+        self.panel = None
+
+    def _link_clicked(self):
+        try:
+            _write_log({"event": "show_waves", "result": self.show_preview()})
+        except Exception as e:
+            _write_log({"event": "show_waves", "error": "%s: %s" % (type(e).__name__, e)})
+        return True
+
     def on_lifecycle_event(self, event, ctx):
         """Show the queued results when the slicing job (slice, or slice + export) completes.
         Orca fires SlicingJobComplete on the UI thread; a cancelled job shows nothing and a
-        failed one only its warnings."""
+        failed one only its warnings. After an export that added waves the notification offers
+        "Show waves", and an open preview panel is refreshed."""
         try:
             ev = getattr(orca, "LifecycleEvent", None)
             if ev is None or event != ev.SlicingJobComplete:
                 return
             notes = _take_notes()
             code = getattr(orca, "LifecycleEvtCode", None)
-            if code is not None and getattr(ctx, "code", None) != code.Ok:
+            completed = code is None or getattr(ctx, "code", None) == code.Ok
+            if not completed:
                 notes = [n for n in notes if n[1] == "warning"] if ctx.code == code.Error else []
+            pv = self._preview() if completed else None
+            fresh = pv is not None and pv.get("fresh")
+            if fresh:
+                pv["fresh"] = False
+                if self.panel is not None and self.panel.is_open():
+                    self.show_preview()
             if not notes:
                 return
             if any(level == "slice" for _, level in notes) and not any("exported G-code" in t for t, _ in notes):
                 notes.append(("The waves are added to the G-code when it is exported; except on Bambu printers "
                               "the preview doesn't show them.", "info"))
             ui = orca.host.ui
-            ui.push_notification(getattr(ui.NotificationLevel, notification_level(notes)), notification_text(notes))
+            level = getattr(ui.NotificationLevel, notification_level(notes))
+            if fresh:
+                ui.push_notification(level, notification_text(notes), "Show waves", self._link_clicked)
+            else:
+                ui.push_notification(level, notification_text(notes))
         except Exception as e:  # never break Orca over a notification
             _write_log({"event": "notification", "error": "%s: %s" % (type(e).__name__, e)})
 

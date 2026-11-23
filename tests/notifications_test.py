@@ -27,10 +27,38 @@ orca = w.orca
 orca.LifecycleEvent = types.SimpleNamespace(SlicingJobComplete="SlicingJobComplete", SliceStarted="SliceStarted")
 orca.LifecycleEvtCode = types.SimpleNamespace(Ok="Ok", Warn="Warn", Error="Error")
 shown = []
+links = []
+panels = []
+
+
+class FakePanel:
+    def __init__(self, **kw):
+        self.kw, self.open, self.posted, self.shows = kw, True, [], 0
+
+    def post(self, data):
+        self.posted.append(data)
+
+    def is_open(self):
+        return self.open
+
+    def show(self):
+        self.shows += 1
+
+
+def create_dock_panel(**kw):
+    panels.append(FakePanel(**kw))
+    return panels[-1]
+
+
+def push_notification(level, text, hyper="", on_click=None):
+    shown.append((level, text))
+    links.append((hyper, on_click))
+
+
 orca.host = types.SimpleNamespace(ui=types.SimpleNamespace(
     NotificationLevel=types.SimpleNamespace(ImportantNotificationLevel="Important",
                                             WarningNotificationLevel="Warning"),
-    push_notification=lambda level, text: shown.append((level, text))))
+    push_notification=push_notification, create_dock_panel=create_dock_panel))
 orca.slicing.Step = types.SimpleNamespace(posSlice="posSlice", posPerimeters="posPerimeters",
                                           psGCodePostProcess="psGCodePostProcess")
 orca.ExecutionResult = types.SimpleNamespace(success=lambda msg="": ("ok", msg))
@@ -138,6 +166,56 @@ def main():
     cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
     check(not shown, "stale lines are dropped")
     cap.on_lifecycle_event("SomethingElse", types.SimpleNamespace(code="Ok"))
+
+    # preview panel
+    exported, _ = w._post_process(gi.build("klipper", gi.INSTANCES), gi.captures(), (True, True), dict(gi.CFG))
+    gctx = types.SimpleNamespace(output_name="/x/plate.gcode", gcode_path="/tmp/y.pp")
+    w._take_notes()
+    shown.clear(); links.clear(); panels.clear()
+    cap = capability({})
+    cap._store_preview(gctx, {"preview": 1}, exported, True, True)
+    pv = w._PREVIEW
+    check(pv is not None and pv["fresh"] and pv["title"] == "plate.gcode"
+          and abs(pv["data"]["stats"]["wave_mm"] - 26.0) < 0.1, "export stores preview data (26 mm of waves)")
+    w._note("Wave Overhangs: waves added to the exported G-code, under a minute of printing.", "info")
+    cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
+    check(len(shown) == 1 and links[-1][0] == "Show waves" and callable(links[-1][1]) and not panels
+          and not w._PREVIEW["fresh"], "the notification offers Show waves; no panel opened by itself")
+    links[-1][1]()
+    check(len(panels) == 1 and panels[0].kw["html"] == w.PREVIEW_PAGE and panels[0].kw["dock"] == "right",
+          "the link opens the preview panel, docked on the right")
+    check(not panels[0].posted, "nothing is sent before the page asks")
+    cap.panel.kw["on_message"]({"command": "preview_ready"})
+    msg = panels[0].posted[-1]
+    check(msg["command"] == "preview" and msg["title"] == "plate.gcode" and len(msg["layers"]) == len(gi.ZS)
+          and msg["stats"]["wave_mm"] > 25, "preview_ready is answered with the layers and stats")
+    cap.panel.kw["on_message"]({"command": "something else"})
+    check(len(panels[0].posted) == 1, "other messages are ignored")
+    cap._store_preview(gctx, {"preview": 1}, exported, True, True)     # a second export
+    w._note("Wave Overhangs: waves added to the exported G-code, under a minute of printing.", "info")
+    cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
+    check(len(panels) == 1 and len(panels[0].posted) == 2 and panels[0].shows == 1,
+          "an open panel is refreshed after the next export, not opened twice")
+    links[-1][1]()
+    check(len(panels) == 1 and len(panels[0].posted) == 3, "the link reuses the open panel")
+    panels[0].open = False
+    cap.panel.kw["on_close"]()
+    links[-1][1]()
+    check(len(panels) == 2, "after closing, the link opens a new panel")
+    # the preview data is kept, replaced or dropped as the export says
+    shown.clear(); links.clear()
+    w._note("a note", "info")
+    cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Warn"))
+    check(not shown, "a cancelled job shows nothing and offers no link")
+    cap._store_preview(gctx, {"preview": 1}, exported, False, True)    # same file exported again
+    check(w._PREVIEW is not None, "a file that already had its waves keeps the data")
+    cap._store_preview(gctx, {"preview": 1}, gi.build("klipper", gi.INSTANCES), False, True)
+    check(w._PREVIEW is None, "an export with no waves drops it")
+    cap._store_preview(gctx, {"preview": 0}, exported, True, True)
+    check(w._PREVIEW is None, "preview = 0 stores nothing")
+    w._note("Wave Overhangs: waves added to the exported G-code, under a minute of printing.", "info")
+    cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
+    check(shown and links[-1][0] == "", "and the notification has no link")
 
     # log
     with open(LOG, encoding="utf-8") as f:

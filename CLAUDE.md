@@ -18,7 +18,7 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 
 Current state:
 
-- `wave_overhangs_plugin.py` — the plugin (v0.6.0: several objects and copies per plate;
+- `wave_overhangs_plugin.py` — the plugin (v0.7.0: several objects and copies per plate;
   gentle slopes keep the slicer's walls, `min_overhang_mm` = 0.5; one wall kept along the
   edge of wide overhangs, `outer_walls` = 1). Ports the fork's generator with pyclipper
   and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
@@ -192,6 +192,27 @@ User feedback (v0.6.0, borrowed from the Support Fins plugin in `../support-fins
   wall boxes, no waves) so their copies are matched and reported, not flagged as unplaceable.
 - **Log**: `_write_log()` appends JSON lines to `wave_overhangs_log.jsonl` next to the plugin
   file (slice: object, stats, settings, time; G-code: report lines). Best effort.
+
+Preview panel (v0.7.0; the plugin's workaround for OrcaSlicer's preview not showing G-code edits on
+non-Bambu printers, see `docs/upstream-proposal-preview-postprocess.md`):
+
+- **Data**: `extract_preview(lines, e_relative)` runs at the end of `_inject()` (worker thread, ~0.3 s)
+  on the final G-code and keeps `_PREVIEW` ({"data", "title", "fresh"}; module global and instance):
+  per layer the wave lines, kept walls (between the WAVE_OVERHANGS markers) and the slicer's outer /
+  overhang walls as context, flat x,y lists in plate mm; context and walls are simplified at 0.02 mm.
+  A file that already has its waves keeps the old data; an export without waves, or `preview` = 0,
+  drops it. 20-46 thousand numbers (0.3 MB) per plate, sent in one message (the probe showed 2 million
+  numbers arrive intact in 0.7 s).
+- **Panel**: no UI calls from `execute()`. `on_lifecycle_event(SlicingJobComplete)` (UI thread) pushes
+  the notification with the hyper text "Show waves" when the data is `fresh`, and refreshes an open
+  panel; the link callback (`show_preview()`) opens `PREVIEW_PAGE` with
+  `orca.host.ui.create_dock_panel(dock="right")` or reuses the open one. The page asks for its data
+  with `{command: "preview_ready"}` (a message posted before the page loads can be dropped) and gets
+  `{command: "preview", layers, bbox, stats, title}`.
+- **Page**: `PREVIEW_PAGE` is hand-written WebGL 1 (Edge WebView2 on Windows is Chromium with WebGL2;
+  verified with `probes/probe_preview_panel_plugin.py`), no libraries. `tests/preview_page_test.py`
+  renders it headlessly in Chrome and checks the colours (mouse and slider handlers are not clicked
+  by it).
 
 Porting notes (things that are easy to get wrong):
 
