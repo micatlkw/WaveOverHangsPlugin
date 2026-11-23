@@ -136,7 +136,24 @@ in OrcaSlicer: the notification appears after slicing and after export; an objec
 support on gets no waves and the report says so; `wave_overhangs_log.jsonl` appears next to the
 installed plugin.
 
-## 13. Next
+## 13. Wave preview panel — plan, step 0 (the probe)
 
-Add the "why not edit the slices" paragraph to the preview proposal and file it; upstream API
-proposal for writable extrusions; publish to the Orca Cloud plugin hub.
+Plan: an HTML/WebGL panel beside the 3D view showing the waves (a docked `create_dock_panel`),
+fed by the exported G-code. Steps: 0 probe in OrcaSlicer; 1 extract per-layer moves from the final
+G-code (test: wave length equals the report); 2 flat layer view (also the WebGL fallback);
+3 3D view (WebGL lines, orbit/zoom, layer-range slider); 4 "Show waves" link in the export
+notification, reopen/refresh, setting to turn it off; 5 docs, v0.7.0.
+
+Step 0: `probes/probe_preview_panel_plugin.py` (a separate slicing-pipeline plugin). Install it,
+pick it under Others > Slicing Pipeline Plugin, slice. It opens a panel from the lifecycle event
+and shows a notification whose link reopens it; the panel reports WebGL support, a ping round
+trip, plugin-to-page messages of 10 thousand to 2 million numbers, and a 100 thousand line draw.
+Results are also in `preview_panel_probe_log.jsonl` next to the plugin. Unknowns this answers:
+can a pipeline plugin open a panel; does the notification link work; message size limit; WebGL.
+Fallback if a pipeline plugin can't: a second script-plugin capability in the same file owns the
+panel.
+
+## 14. Next
+
+After step 0: steps 1-3 can be built and tested without OrcaSlicer. Also: add the "second window"
+sentence to the preview proposal; README note for macOS; v0.6.0 check in OrcaSlicer; push.
