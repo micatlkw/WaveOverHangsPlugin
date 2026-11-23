@@ -1790,6 +1790,332 @@ def _wave_block(layer_cap, state, cal, bbl, cfg, totals):
 # preview data (for the preview panel)
 # ============================================================================
 
+# The preview panel's page: a WebGL view of the data from extract_preview(). It asks the plugin
+# for its data once loaded ({"command": "preview_ready"}) and gets {"command": "preview", "layers",
+# "bbox", "stats", "title"} back. #mode=layer&to=57&from=0&yaw=-50&pitch=35&show=wk in the URL
+# sets the initial view (used by tests/preview_page_test.py).
+PREVIEW_PAGE = r"""
+<!doctype html>
+<meta charset="utf-8">
+<title>Wave preview</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--orca-bg, #1e1e1e);
+               color: var(--orca-fg, #ddd); font: 12px sans-serif; }
+  body { display: flex; flex-direction: column; }
+  #bar { padding: 6px 8px 4px; display: flex; flex-direction: column; gap: 5px; }
+  .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .row label { display: flex; align-items: center; gap: 3px; cursor: pointer; }
+  .row input[type=range] { flex: 1; min-width: 120px; }
+  button { padding: 2px 8px; cursor: pointer; }
+  button.on { outline: 2px solid #1fb89a; }
+  #wrap { flex: 1; position: relative; min-height: 120px; }
+  canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; outline: none; }
+  #info, #status { padding: 2px 8px 6px; color: var(--orca-muted, #999); font-size: 11px; }
+  .bad { color: #e5534b; }
+  .sw { display: inline-block; width: 10px; height: 3px; margin: 0 3px 2px 0; vertical-align: middle; }
+</style>
+<div id="bar">
+  <div class="row">
+    <button type="button" id="m3d" class="on">3D</button>
+    <button type="button" id="mlayer">Layer</button>
+    <button type="button" id="fit" title="Fit the view to the waves (double-click the view)">Fit</button>
+    <label><input type="checkbox" id="sw" checked><span class="sw" style="background:#1ad9b3"></span>waves</label>
+    <label><input type="checkbox" id="sk" checked><span class="sw" style="background:#ff8c1a"></span>kept walls</label>
+    <label><input type="checkbox" id="sc" checked><span class="sw" style="background:#9e9ea8"></span>outer walls</label>
+  </div>
+  <div class="row"><span id="lt" style="min-width:90px">top layer</span><input type="range" id="to" min="0" max="0" value="0">
+    <button type="button" id="pw" title="Previous layer with waves">&#9664; waves</button>
+    <button type="button" id="nw" title="Next layer with waves">waves &#9654;</button></div>
+  <div class="row"><span id="lf" style="min-width:90px">from layer</span><input type="range" id="from" min="0" max="0" value="0"></div>
+</div>
+<div id="wrap"><canvas id="c" tabindex="0"></canvas></div>
+<div id="info"></div>
+<div id="status">waiting for the plugin...</div>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var statusEl = $("status"), infoEl = $("info"), canvas = $("c");
+  function fail(msg) { statusEl.textContent = "error: " + msg; statusEl.className = "bad"; }
+  window.onerror = function (m) { fail(m); };
+
+  var gl = null, prog = null, loc = {};
+  var data = null, bufs = {}, off = {}, lens = {}, wavedLayers = [];
+  var KINDS = ["c", "k", "w"];
+  var COLORS = { c: [0.62, 0.62, 0.66, 0.5], k: [1.0, 0.55, 0.1, 1.0], w: [0.1, 0.85, 0.7, 1.0] };
+  var S = { mode: "3d", from: 0, to: 0, show: { c: true, k: true, w: true } };
+  var cam = { tx: 0, ty: 0, tz: 0, dist: 100, yaw: -1.0, pitch: 0.6 };
+  var saved3d = null;
+  var FOV = 45 * Math.PI / 180;
+
+  // ---- small matrix helpers (column-major) -------------------------------------------------
+  function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+  function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+  function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+  function norm(a) { var l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+  function perspective(aspect, near, far) {
+    var f = 1 / Math.tan(FOV / 2);
+    return [f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) / (near - far), -1, 0, 0, 2 * far * near / (near - far), 0];
+  }
+  function lookAt(eye, c, up) {
+    var z = norm(sub(eye, c)), x = norm(cross(up, z)), y = cross(z, x);
+    return [x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1];
+  }
+  function mul(a, b) {
+    var o = new Array(16), c, r, k, s;
+    for (c = 0; c < 4; c++) for (r = 0; r < 4; r++) {
+      s = 0; for (k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k];
+      o[c * 4 + r] = s;
+    }
+    return o;
+  }
+  function eyeOf() {
+    var cp = Math.cos(cam.pitch);
+    return [cam.tx + cam.dist * cp * Math.cos(cam.yaw), cam.ty + cam.dist * cp * Math.sin(cam.yaw),
+            cam.tz + cam.dist * Math.sin(cam.pitch)];
+  }
+  function basis() {
+    var e = eyeOf(), f = norm(sub([cam.tx, cam.ty, cam.tz], e));
+    var right = norm(cross(f, [0, 0, 1]));
+    return { f: f, right: right, up: cross(right, f) };
+  }
+
+  // ---- WebGL --------------------------------------------------------------------------------
+  function initGL() {
+    gl = canvas.getContext("webgl", { antialias: true });
+    if (!gl) { fail("WebGL is not available in this panel"); return false; }
+    function sh(type, src) {
+      var s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+      return s;
+    }
+    prog = gl.createProgram();
+    gl.attachShader(prog, sh(gl.VERTEX_SHADER, "attribute vec3 p; uniform mat4 m; void main(){gl_Position=m*vec4(p,1.0);}"));
+    gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, "precision mediump float; uniform vec4 col; void main(){gl_FragColor=col;}"));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+    loc.p = gl.getAttribLocation(prog, "p");
+    loc.m = gl.getUniformLocation(prog, "m");
+    loc.col = gl.getUniformLocation(prog, "col");
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.enable(gl.DEPTH_TEST);
+    return true;
+  }
+
+  function load(msg) {
+    var L = msg.layers || [];
+    if (!L.length) { statusEl.textContent = "the plugin sent no layers"; return; }
+    data = msg;
+    KINDS.forEach(function (k) {
+      var n = 0, i, j, t, pls, f;
+      off[k] = new Int32Array(L.length + 1);
+      lens[k] = new Float64Array(L.length);
+      for (i = 0; i < L.length; i++) {
+        off[k][i] = n; pls = L[i][k];
+        for (j = 0; j < pls.length; j++) n += (pls[j].length / 2 - 1) * 2;
+      }
+      off[k][L.length] = n;
+      var arr = new Float32Array(n * 3), q = 0;
+      for (i = 0; i < L.length; i++) {
+        pls = L[i][k];
+        for (j = 0; j < pls.length; j++) {
+          f = pls[j];
+          for (t = 2; t < f.length; t += 2) {
+            arr[q++] = f[t - 2]; arr[q++] = f[t - 1]; arr[q++] = L[i].z;
+            arr[q++] = f[t]; arr[q++] = f[t + 1]; arr[q++] = L[i].z;
+            lens[k][i] += Math.hypot(f[t] - f[t - 2], f[t + 1] - f[t - 1]);
+          }
+        }
+      }
+      if (!bufs[k]) bufs[k] = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, bufs[k]);
+      gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STATIC_DRAW);
+    });
+    wavedLayers = [];
+    for (var i = 0; i < L.length; i++) if (lens.w[i] > 0 || lens.k[i] > 0) wavedLayers.push(i);
+    $("to").max = $("from").max = L.length - 1;
+    S.to = L.length - 1; S.from = 0;
+    applyHash();
+    fit();
+    syncUI();
+    var st = msg.stats || {};
+    statusEl.textContent = L.length + " layers, " + (st.numbers || 0) + " numbers" +
+      (msg.title ? " - " + msg.title : "");
+    statusEl.className = "";
+    draw();
+  }
+
+  // ---- view ---------------------------------------------------------------------------------
+  function range() { return S.mode === "layer" ? [S.to, S.to] : [S.from, S.to]; }
+
+  function fit() {
+    if (!data) return;
+    var r = range(), lo = [1e18, 1e18, 1e18], hi = [-1e18, -1e18, -1e18], any = false;
+    function scan(kinds) {
+      kinds.forEach(function (k) {
+        for (var i = r[0]; i <= r[1]; i++) {
+          var pls = data.layers[i][k];
+          for (var j = 0; j < pls.length; j++) for (var t = 0; t < pls[j].length; t += 2) {
+            any = true;
+            lo[0] = Math.min(lo[0], pls[j][t]); hi[0] = Math.max(hi[0], pls[j][t]);
+            lo[1] = Math.min(lo[1], pls[j][t + 1]); hi[1] = Math.max(hi[1], pls[j][t + 1]);
+          }
+          lo[2] = Math.min(lo[2], data.layers[i].z); hi[2] = Math.max(hi[2], data.layers[i].z);
+        }
+      });
+    }
+    scan(["w", "k"]);
+    if (!any) { lo = [1e18, 1e18, 1e18]; hi = [-1e18, -1e18, -1e18]; scan(KINDS); }
+    if (!any) return;
+    cam.tx = (lo[0] + hi[0]) / 2; cam.ty = (lo[1] + hi[1]) / 2; cam.tz = (lo[2] + hi[2]) / 2;
+    var diag = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], S.mode === "layer" ? 0 : hi[2] - lo[2]) || 10;
+    cam.dist = diag * 0.75 / Math.tan(FOV / 2) + 2;
+  }
+
+  function resize() {
+    var dpr = window.devicePixelRatio || 1;
+    var w = Math.max(1, Math.round(canvas.clientWidth * dpr)), h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  }
+
+  function bgColor() {
+    var m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(getComputedStyle(document.body).backgroundColor);
+    return m ? [m[1] / 255, m[2] / 255, m[3] / 255] : [0.12, 0.12, 0.12];
+  }
+
+  function draw() {
+    if (!gl || !data) return;
+    resize();
+    var bg = bgColor();
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clearColor(bg[0], bg[1], bg[2], 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    var e = eyeOf();
+    var up = S.mode === "layer" ? [0, 1, 0] : [0, 0, 1];
+    var m = mul(perspective(canvas.width / canvas.height, cam.dist * 0.01, cam.dist * 20),
+                lookAt(e, [cam.tx, cam.ty, cam.tz], up));
+    gl.useProgram(prog);
+    gl.uniformMatrix4fv(loc.m, false, new Float32Array(m));
+    var r = range();
+    KINDS.forEach(function (k) {
+      if (!S.show[k]) return;
+      var first = off[k][r[0]], count = off[k][r[1] + 1] - first;
+      if (count <= 0) return;
+      gl.bindBuffer(gl.ARRAY_BUFFER, bufs[k]);
+      gl.enableVertexAttribArray(loc.p);
+      gl.vertexAttribPointer(loc.p, 3, gl.FLOAT, false, 0, 0);
+      gl.uniform4fv(loc.col, new Float32Array(COLORS[k]));
+      gl.drawArrays(gl.LINES, first, count);
+    });
+  }
+
+  function syncUI() {
+    var L = data.layers, r = range(), sum = { w: 0, k: 0 }, i;
+    for (i = r[0]; i <= r[1]; i++) { sum.w += lens.w[i]; sum.k += lens.k[i]; }
+    $("to").value = S.to; $("from").value = S.from;
+    $("lt").textContent = (S.mode === "layer" ? "layer " : "top layer ") + (S.to + 1) + " / " + L.length;
+    $("lf").textContent = "from layer " + (S.from + 1);
+    $("from").disabled = S.mode === "layer";
+    $("m3d").className = S.mode === "3d" ? "on" : "";
+    $("mlayer").className = S.mode === "layer" ? "on" : "";
+    infoEl.textContent = "z " + L[S.to].z + " mm   shown: waves " + Math.round(sum.w) + " mm, kept walls " +
+      Math.round(sum.k) + " mm   (whole print: waves " + Math.round((data.stats || {}).wave_mm || 0) + " mm on " +
+      wavedLayers.length + " layers)";
+  }
+
+  function refresh() { syncUI(); draw(); }
+
+  function setMode(mode) {
+    if (mode === S.mode) return;
+    if (mode === "layer") {
+      saved3d = { yaw: cam.yaw, pitch: cam.pitch };
+      cam.yaw = -Math.PI / 2; cam.pitch = Math.PI / 2 - 0.0005;
+    } else if (saved3d) { cam.yaw = saved3d.yaw; cam.pitch = saved3d.pitch; }
+    S.mode = mode;
+    fit();
+    refresh();
+  }
+
+  function applyHash() {     // #mode=layer&to=57&from=0&yaw=-50&pitch=35&show=wk  (for tests and bookmarks)
+    var h = {};
+    location.hash.replace(/^#/, "").split("&").forEach(function (kv) {
+      var p = kv.split("="); if (p[0]) h[p[0]] = p[1];
+    });
+    var n = data.layers.length;
+    if (h.yaw !== undefined) cam.yaw = parseFloat(h.yaw) * Math.PI / 180;
+    if (h.pitch !== undefined) cam.pitch = parseFloat(h.pitch) * Math.PI / 180;
+    if (h.from !== undefined) S.from = Math.min(n - 1, Math.max(0, parseInt(h.from, 10)));
+    if (h.to !== undefined) S.to = Math.min(n - 1, Math.max(0, parseInt(h.to, 10)));
+    if (h.show !== undefined) KINDS.forEach(function (k) { S.show[k] = h.show.indexOf(k) >= 0; });
+    KINDS.forEach(function (k) { $({ w: "sw", k: "sk", c: "sc" }[k]).checked = S.show[k]; });
+    if (h.mode === "layer") { saved3d = { yaw: cam.yaw, pitch: cam.pitch }; cam.yaw = -Math.PI / 2; cam.pitch = Math.PI / 2 - 0.0005; S.mode = "layer"; }
+    if (S.from > S.to) S.from = S.to;
+  }
+
+  // ---- controls -----------------------------------------------------------------------------
+  $("to").addEventListener("input", function () { S.to = +this.value; if (S.from > S.to) S.from = S.to; refresh(); });
+  $("from").addEventListener("input", function () { S.from = +this.value; if (S.from > S.to) S.to = S.from; refresh(); });
+  $("m3d").addEventListener("click", function () { setMode("3d"); });
+  $("mlayer").addEventListener("click", function () { setMode("layer"); });
+  $("fit").addEventListener("click", function () { fit(); draw(); });
+  [["sw", "w"], ["sk", "k"], ["sc", "c"]].forEach(function (p) {
+    $(p[0]).addEventListener("change", function () { S.show[p[1]] = this.checked; draw(); });
+  });
+  function jump(dir) {
+    var i, cur = S.to;
+    if (dir > 0) { for (i = 0; i < wavedLayers.length; i++) if (wavedLayers[i] > cur) { S.to = wavedLayers[i]; break; } }
+    else { for (i = wavedLayers.length - 1; i >= 0; i--) if (wavedLayers[i] < cur) { S.to = wavedLayers[i]; break; } }
+    if (S.from > S.to) S.from = S.to;
+    refresh();
+  }
+  $("pw").addEventListener("click", function () { jump(-1); });
+  $("nw").addEventListener("click", function () { jump(1); });
+  canvas.addEventListener("keydown", function (ev) {
+    if (!data) return;
+    if (ev.key === "ArrowUp") { S.to = Math.min(data.layers.length - 1, S.to + 1); refresh(); ev.preventDefault(); }
+    if (ev.key === "ArrowDown") { S.to = Math.max(0, S.to - 1); if (S.from > S.to) S.from = S.to; refresh(); ev.preventDefault(); }
+  });
+
+  var drag = null;
+  canvas.addEventListener("mousedown", function (ev) {
+    canvas.focus();
+    drag = { x: ev.clientX, y: ev.clientY, pan: ev.button !== 0 || ev.shiftKey || S.mode === "layer" };
+    ev.preventDefault();
+  });
+  window.addEventListener("mouseup", function () { drag = null; });
+  window.addEventListener("mousemove", function (ev) {
+    if (!drag || !data) return;
+    var dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
+    drag.x = ev.clientX; drag.y = ev.clientY;
+    if (drag.pan) {
+      var b = basis(), k = cam.dist * 2 * Math.tan(FOV / 2) / Math.max(1, canvas.clientHeight);
+      cam.tx += (-dx * b.right[0] + dy * b.up[0]) * k;
+      cam.ty += (-dx * b.right[1] + dy * b.up[1]) * k;
+      cam.tz += (-dx * b.right[2] + dy * b.up[2]) * k;
+    } else {
+      cam.yaw -= dx * 0.01;
+      cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch + dy * 0.01));
+    }
+    draw();
+  });
+  canvas.addEventListener("wheel", function (ev) {
+    cam.dist = Math.max(1, cam.dist * Math.exp(ev.deltaY * 0.0012));
+    draw(); ev.preventDefault();
+  }, { passive: false });
+  canvas.addEventListener("dblclick", function () { fit(); draw(); });
+  window.addEventListener("resize", draw);
+
+  // ---- start --------------------------------------------------------------------------------
+  try { if (initGL()) {
+    orca.onMessage(function (msg) { if (msg && msg.command === "preview") { try { load(msg); } catch (e) { fail(e.message || e); } } });
+    orca.postMessage({ command: "preview_ready" });
+  } } catch (e) { fail(e.message || e); }
+})();
+</script>
+"""
+
+
 def extract_preview(lines, e_relative, tol_mm=0.02):
     """Per-layer toolpaths of the final G-code for the preview panel.
 

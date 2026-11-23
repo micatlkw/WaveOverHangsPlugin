@@ -165,10 +165,20 @@ mm, plate coordinates, context and walls simplified at 0.02 mm. `tests/preview_e
 wave and kept-wall lengths equal the report on all 9 real files (within 0.05 mm of waves);
 data is small (20k-46k numbers, 0.3 MB for a whole plate).
 
+Steps 2-3 done: `PREVIEW_PAGE` in the plugin (WebGL 1, no libraries). 3D view (left-drag orbit,
+right/shift-drag pan, wheel zoom, double-click or Fit to refit to the waves) and a top-down Layer
+view; top-layer and from-layer sliders, previous/next layer with waves, arrow keys, toggles for
+waves / kept walls / outer walls; shows lengths for the shown layers. It asks the plugin for data
+with `{command: "preview_ready"}` and expects `{command: "preview", layers, bbox, stats, title}`;
+`#mode=layer&to=57&from=0&yaw=-50&pitch=35&show=wk` sets the initial view.
+`tests/preview_page_test.py` renders four views of a real file in headless Chrome and checks the
+colours are where they should be and that waves can be hidden (all pass; also on synthetic data).
+Not covered by the test: mouse orbit/pan/zoom, the sliders and buttons (wired up, not clicked).
+
 ## 14. Next
 
-Steps 2-3: the panel page (WebGL: orbit/zoom/pan, layer-range slider, layer-only top view, colours
-by kind) as a string in the plugin, tested headlessly with Chrome (installed here) on data from
-real files. Then step 4 (notification link, reopen, refresh after export, setting) and step 5.
-Also: add the "second window" sentence to the preview proposal; README note for macOS; v0.6.0
-check in OrcaSlicer; push.
+Step 4: the plugin side. Keep the extracted data after export (module global + instance, like
+the captures), reply to `preview_ready`, open the panel from a "Show waves" link in the export
+notification (and a setting `preview` to turn it off), reuse an open panel, refresh it after each
+export. Then step 5 (README, `CLAUDE.md`, v0.7.0). Also: add the "second window" sentence to the
+preview proposal; README note for macOS; v0.6.0 check in OrcaSlicer; push.

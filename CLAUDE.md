@@ -49,6 +49,9 @@ embedded Python (>= 3.12); it imports `orca`, which only exists inside the app.
 - Minimum-overhang setting (slope / shelf / slope joined to a shelf):
   `python3 tests/min_overhang_test.py [out.png]`
 - Notification, support toggle and log (fake host): `python3 tests/notifications_test.py`
+- Preview panel data (lengths equal the report on real files): `python3 tests/preview_extract_test.py [file.gcode ...]`
+- Preview panel page, rendered headlessly in Chrome (needs `google-chrome`; PNGs go to the given
+  folder): `python3 tests/preview_page_test.py [file.gcode] [out_dir]`
 - Kept walls (cantilever / ring / plate with a hole / narrow band / band + shelf, 0–2 walls):
   `python3 tests/outer_wall_test.py [out.png]`
 - A local venv with the test dependencies: `python3 -m venv .venv && .venv/bin/pip install
