@@ -5,49 +5,69 @@ Draft for an issue on [OrcaSlicer/OrcaSlicer](https://github.com/OrcaSlicer/Orca
 ## The problem
 
 Slicing-pipeline plugins can change the G-code in their final post-processing step. On Bambu
-printers that step runs right after slicing, and the preview shows the result. On every other
-printer it only runs when the file is exported, so the preview never shows what the plugin did.
+printers that step runs right after slicing, so the preview, layer slider, print time and
+filament estimate all reflect it. On every other printer it runs only when the file is
+exported, so none of them do: users see one file in the preview and print another.
 
-For plugins that add or change moves, users on non-Bambu printers have nothing to check before
-printing:
+## Who this affects
 
-- the preview and layer slider show toolpaths that will not be printed, and leave out ones
-  that will;
-- the print time and filament estimates don't include the plugin's changes;
-- the only way to see the real result is to export, then open the exported file in the G-code
-  viewer.
+Many useful G-code plugins change the toolpaths themselves, not just comments or start/end
+code, so the preview is the only way to check them. Examples of what plugins in this step can
+do, many of which exist today as post-processing scripts:
 
-The motivating case is [Wave Overhangs](https://github.com/micatlkw/WaveOverHangsPlugin), a
-plugin port of the [OrcaSlicer-WaveOverhangs](https://github.com/dennisklappe/OrcaSlicer-WaveOverhangs)
-fork. It adds wave-shaped overhang paths and can add more than an hour of printing, none of
-which appears in the preview on non-Bambu printers.
+- **Add or replace toolpaths**: overhang strategies such as wave or arc overhangs, extra
+  ironing passes, non-planar top surfaces, purge or priming moves.
+- **Move existing toolpaths**: shifting alternate walls in Z for interlocking layers ("brick
+  layers"), changing Z-hop or travel paths.
+- **Rewrite moves**: arc fitting (G2/G3), splitting or merging segments.
+- **Change speed, flow, fan or temperature** per feature or per layer: temperature and flow
+  calibration towers, adaptive flow or pressure advance, extra cooling on overhangs.
+- **Insert pauses and events**: filament or colour changes, timelapse moves, inserts placed at a
+  given height.
+
+For all of these, a non-Bambu user today cannot see what will be printed without exporting and
+opening the file in the separate G-code viewer.
+
+## Why it matters
+
+- **Safety.** A plugin that adds or moves toolpaths can produce collisions, moves outside the
+  object or gaps. Checking the preview before printing is how slicer users catch problems;
+  with a plugin, that check currently shows the wrong G-code.
+- **Planning.** Print time and filament use decide whether a print fits a time slot or a spool.
+  A plugin that slows parts of a print or adds material can change both a lot (one overhang
+  plugin adds over an hour on a test model), and the estimate doesn't show it.
+- **Consistency.** The same plugin shows its changes on a Bambu printer and hides them on every
+  other printer. Users and plugin authors can't tell whether a plugin is broken or the preview
+  just doesn't show it.
+- **Trust in the plugin system.** Plugins are new. If plugin changes are visible like any other
+  slicer feature, users can try plugins confidently and authors can develop and debug them in
+  the slicer. If changes only appear after export, plugins feel like a hidden layer users have
+  to take on faith.
 
 ## The proposal
 
-Run plugins' G-code step right after slicing for all printers, as is already done for Bambu
-printers, so the preview shows the G-code that will actually be printed. Post-processing
-scripts can keep running at export as they do today.
+For all printers, run plugins' G-code step right after slicing and refresh the preview from
+the result, as OrcaSlicer already does for Bambu printers. Post-processing scripts can keep
+running at export as they do today. The print time and filament estimates should be refreshed
+from the edited G-code too; that would also fix the same gap on Bambu printers, where only the
+toolpaths are refreshed today.
 
 ## Why this approach
 
-- **It already works.** The Bambu path runs the step after slicing and refreshes the preview
-  from the edited file. Using it for every printer adds a printer type to an existing,
-  tested mechanism; it doesn't add a new one.
-- **The preview matches what gets printed**, so users can check plugin output before printing,
-  like any other slicer feature.
-- **Plugins behave the same on every printer.** Today the same plugin shows up in the preview
-  on one printer and not on another, which is confusing for users and plugin authors.
-- **Scripts are not affected.** Keeping scripts at export avoids changing behaviour that
-  existing user scripts rely on, such as renaming the output file.
+- **It reuses what already works.** Running the step after slicing and refreshing the preview
+  is already in place and tested for Bambu printers. This extends it to the other printers
+  rather than adding a new mechanism.
+- **Scripts are not affected.** Existing user scripts, including ones that rename the output
+  file or depend on the export target, keep running at export as before.
+- **No new work for plugin authors.** Existing plugins don't need changes; their output just
+  becomes visible.
 
 ## Things to consider
 
-- Plugins would run once per slice instead of once per export, and slicing would take as long
-  as the plugin does (time that export takes today).
-- Plugins would run before the post-processing scripts rather than after, and would no longer
-  see the final export file name. If that matters for some plugins, the change could be an
-  option, either a process setting or a flag a plugin declares.
-- The print time and filament estimates should also be refreshed from the edited file. That
-  doesn't happen on Bambu printers today either, so it is worth fixing at the same time.
+- Plugins would run once per slice instead of once per export. Slicing takes as long as the
+  plugin, time that export takes today.
+- Plugins would run before post-processing scripts rather than after, and wouldn't see the
+  final export file name. If some plugins depend on that, the change could be an option, either
+  a process setting or a flag a plugin declares.
 
 We are happy to help test, or to contribute a PR if the maintainers agree with the approach.
