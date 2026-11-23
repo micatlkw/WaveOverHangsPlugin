@@ -23,8 +23,16 @@ printing one object at a time.
 
 The waves are added at export, so **on non-Bambu printers the slicer's preview does not show
 them** (see [Known limits](#known-limits)). To check a slice, open the exported `.gcode` file in
-OrcaSlicer: drag it into the window, or use the File menu. It opens in the G-code viewer, which
-shows the waves and the real print time.
+a **second** OrcaSlicer, which shows its real moves, the waves included, and the real print
+time:
+
+- in Windows Explorer, right-click the exported file → **Open with** → **OrcaSlicer**; or
+- in OrcaSlicer, **File → New Window**, then drag the file into the new window.
+
+OrcaSlicer has no "Open G-code" menu item. Don't drag the file into the window you are slicing
+in: opening a G-code file closes the current project and loads the settings stored in the file.
+If New Window is greyed out, or Open with brings back the window you already have, turn off
+**Allow only one OrcaSlicer instance** in Preferences (on macOS this is on by default).
 
 ## Requirements
 
@@ -143,7 +151,8 @@ Inside the file, each layer's waves sit between `; WAVE_OVERHANGS_START` and
 ## Known limits
 
 - **Preview:** on non-Bambu printers the slicer's preview, print time and filament estimate
-  don't include the waves. Open the exported file in the G-code viewer to see them. A
+  don't include the waves. Open the exported file in a second OrcaSlicer to see them (see
+  [How it works](#how-it-works)). A
   [proposal to OrcaSlicer](docs/upstream-proposal-preview-postprocess.md) would fix this.
 - **Plugins can't add toolpaths** to OrcaSlicer yet, so the waves are added to the G-code text
   instead. As a result:
