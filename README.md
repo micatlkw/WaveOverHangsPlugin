@@ -54,7 +54,7 @@ preset. Distances are in mm.
 |---|---|---|
 | `min_overhang_mm` | `0.5` | Overhang that reaches no further than this past the layer below keeps the slicer's normal walls. This is meant for gentle slopes: at 0.2 mm layers, 0.5 mm per layer is about 68° from vertical. Where such a slope joins an overhang that reaches further, the strip next to it is still waved, because the waves need it as their anchor. `0` waves every overhang, as the fork does. |
 | `min_length_mm` | `0` | Skip overhangs whose outline is shorter than this. |
-| `outer_walls` | `1` | Normal walls kept along the edge of a waved overhang, so its side looks like the rest of the object. They are printed right after the waves, innermost first, and the waves fill the area inside them. `0` runs the waves to the edge. At most the process's wall count. |
+| `outer_walls` | `1` | Normal walls kept along the edge of a waved overhang, so its side looks like the rest of the object. They are printed right after the waves, innermost first, and the waves fill the area inside them. `0` runs the waves to the edge. At most the process's wall count. An overhang has to reach past the kept walls (about 0.4 mm each) plus half a nozzle to get waves; narrower ones are left to the slicer, as in the fork. |
 | `enabled` | `1` | `0` only measures and writes the report. Nothing is cut and no waves are added. |
 
 ### Wave shape

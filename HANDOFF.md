@@ -93,7 +93,7 @@ overhang region is painted with (the region's extruder is not captured).
 v0.3.0: `min_overhang_mm` defaults to 0.5 (chosen after the multi-object print). README rewritten
 for users: install, every setting, the report, troubleshooting, known limits.
 
-## 10. Kept outer wall — done in code, not yet run in OrcaSlicer
+## 10. Kept outer wall — done
 
 v0.4.0: `outer_walls` (default 1, the fork's default) and `wall_speed_mm_s` (0 = the slicer's
 overhang 75–100% speed, else bridge speed). Tested outside OrcaSlicer:
@@ -104,6 +104,14 @@ speed and flow, retraction balanced), regression on the real files (no walls: id
 To check in OrcaSlicer: re-slice the 4-copy plate; the report's "generated" lines give mm of
 kept wall and the "injected" line the wall speed. On the G-code viewer each waved overhang
 should have a red outer wall along its edge right after the waves.
+
+Real run (4-copy plate laid out by object, v0.4.0, `overhang_4_4_speed` = 10): 16 wave blocks,
+848 mm of kept wall at 10 mm/s; walls follow every waved edge (cross arms, shelves, the arch at
+z=10.2, both plate holes at z=12.8), outer wall flow 0.0754 mm³/mm = 0.0314 mm E per mm (0.42 ×
+0.2 mm) as computed. With one wall kept, the wave area shrinks by one wall spacing (~0.42 mm),
+so overhangs growing less than that plus half a nozzle get no waves: OverhangWaveTest's cone
+(0.55 mm per layer) and Test Object's z=19.6 are now left to the slicer (5 instead of 12 waved
+layers on OverhangWaveTest), as the fork does with `wave_overhang_outer_perimeters` = 1. Not printed.
 
 ## 11. Next
 
