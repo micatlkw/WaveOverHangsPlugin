@@ -137,6 +137,11 @@ def main():
     check(any(level == "warning" and "Exclude objects" in text for text, level in notes),
           "warning when several objects have no labels")
 
+    notes = []
+    w._post_process(gi.build("klipper", gi.INSTANCES), {}, (False, False), dict(gi.CFG), notes)
+    check(len(notes) == 1 and notes[0][1] == "warning" and "reused an earlier slice" in notes[0][0],
+          "warning when the plugin captured nothing (OrcaSlicer reused a slice)")
+
     # showing them
     w._take_notes()
     shown.clear()

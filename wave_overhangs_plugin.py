@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.7.1"
+# version = "0.7.2"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhangs -- slicing-pipeline plugin.
@@ -2235,7 +2235,11 @@ def _post_process(lines, captures, survived, cfg, notes=None):
         return lines, "already processed, left untouched"
 
     if not captures:
-        report.append("nothing captured at slice time (re-slice with the plugin selected): nothing injected")
+        report.append("nothing captured at slice time (OrcaSlicer reused a slice made before the plugin was "
+                      "loaded, or the plugin was not selected when slicing): nothing injected")
+        notes.append(("Wave Overhangs: no waves added to this G-code, because OrcaSlicer reused an earlier slice "
+                      "that the plugin never saw. In the process settings remove Wave Overhangs from Slicing "
+                      "Pipeline Plugin, slice, add it back, slice again and export.", "warning"))
     else:
         _inject_all(lines, captures, cfg, report, notes)
 
@@ -2338,7 +2342,7 @@ def _inject_all(lines, captures, cfg, report, notes):
                       % _minutes_text(minutes), "info"))
 
 
-_VERSION = "0.7.1"
+_VERSION = "0.7.2"
 
 
 # ============================================================================

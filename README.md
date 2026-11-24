@@ -157,7 +157,7 @@ Inside the file, each layer's waves sit between `; WAVE_OVERHANGS_START` and
 
 | Report says | Meaning and fix |
 |---|---|
-| `nothing captured at slice time` | The plugin wasn't selected when the plate was sliced. Select it and slice again. |
+| `nothing captured at slice time` (and a warning notification) | The plugin never saw the slice: it wasn't selected when you sliced, or OrcaSlicer reused an earlier slice, which it does after you reinstall or update the plugin without changing anything else. In the process settings remove Wave Overhangs from **Slicing Pipeline Plugin**, slice, add it back, slice again and export. |
 | `WARNING: ... the slices were not cut` | OrcaSlicer reused slicing from before the plugin was selected, so the slicer's own walls are still in the overhang. Make it slice the object again from the start, for example by changing the layer height and changing it back. |
 | `WARNING: N objects but the G-code has no object labels` | Turn on **Exclude objects** or **Label objects** (Others → G-code output). |
 | `no captured object matches (...)` | The plugin couldn't place that copy, so it gets no waves. Slice again. If it persists, please report it with the G-code. |

@@ -189,6 +189,17 @@ To check in OrcaSlicer: slice and export a plate with waves; the second notifica
 panel open and it should refresh. Also the v0.6.0 checks (notifications, Enable support toggle,
 log file).
 
+Real run of 0.7.0/0.7.1 (user: no notification, no preview): read from the user's OrcaSlicer data
+folder (`%APPDATA%/OrcaSlicer/orca_plugins/wave_overhangs_plugin.py/wave_overhangs_log.jsonl`,
+readable from WSL as `%APPDATA%/OrcaSlicer/`). Cause: after reinstalling
+the plugin OrcaSlicer reused the cached slice (SliceStarted -> SliceGeometryFinished in the same
+second, no `slice` entry), so the plugin's posSlice never ran, the reloaded module had no captures,
+the export said "nothing captured" in the file only, so no notes, no preview data. The lifecycle
+event and `ctx.code` do reach the plugin. 0.7.2 adds a warning notification for this case (remove
+Wave Overhangs from Slicing Pipeline Plugin, slice, add it back, slice, export). Possible
+improvement: persist the captures on disk so a reloaded plugin can still inject into a cached slice
+(needs a staleness check).
+
 ## 15. Next
 
 Check v0.7.0 in OrcaSlicer, fix what the mouse/slider use turns up, then push and tag v0.7.0.
