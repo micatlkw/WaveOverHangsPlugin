@@ -1,1 +1,16 @@
+# Python
 __pycache__/
+*.pyc
+.venv/
+
+# local scratch and tooling
+.scratch/
+.idea/
+.vscode/
+.DS_Store
+
+# things a run produces; never commit them (they can hold file names and settings)
+*.gcode
+*.gcode.3mf
+wave_overhangs_log.jsonl
+preview_panel_probe_log.jsonl

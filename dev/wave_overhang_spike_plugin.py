@@ -8,6 +8,8 @@
 # version = "0.02"
 # type = "slicing-pipeline"
 # ///
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Wave Overhang Spike -- proves the two halves of a G-code-level wave plugin can be joined.
 
 NOT a wave-overhang implementation. It answers, before any of the real

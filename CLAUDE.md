@@ -18,7 +18,7 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 
 Current state:
 
-- `wave_overhangs_plugin.py` — the plugin (v0.11.0: several objects and copies per plate;
+- `wave_overhangs_plugin.py` — the plugin (v0.12.0: several objects and copies per plate;
   gentle slopes keep the slicer's walls, `min_overhang_mm` = 0.5; one wall kept along the
   edge of wide overhangs, `outer_walls` = 1). Ports the fork's generator with pyclipper
   and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
@@ -30,11 +30,11 @@ Current state:
   holes; 12 waved layers) also sliced correctly and printed well. v0.2.0 placed the waves of
   three objects on one plate (Klipper exclude-object labels); with labels off it refused, as
   designed. A 4-copy plate (3 objects, one "+" copy) with `min_overhang_mm` = 0.5 printed OK.
-- `wave_overhang_spike_plugin.py` — the spike that proved the route (hand-over, offset
+- `dev/wave_overhang_spike_plugin.py` — the spike that proved the route (hand-over, offset
   calibration, retraction, `shrink` vs `delete`). Kept as reference; see "Spike" below.
 - `docs/upstream-proposal-preview-postprocess.md` — draft upstream proposal: run G-code
   plugins after slicing for all printers so the preview shows their edits.
-- `probes/` — dependency probes; pyclipper and shapely both install inside OrcaSlicer.
+- `dev/probes/` — dependency probes; pyclipper and shapely both install inside OrcaSlicer.
 
 ## Commands
 
@@ -48,6 +48,9 @@ embedded Python (>= 3.12); it imports `orca`, which only exists inside the app.
   `python3 tests/gcode_instances_test.py`
 - Minimum-overhang setting (slope / shelf / slope joined to a shelf):
   `python3 tests/min_overhang_test.py [out.png]`
+- Every test file runs on its own and ends with `all OK` (see `CONTRIBUTING.md` for the list). None needs a local
+  file: real exported G-code is optional (`WAVE_TEST_GCODE_DIR=<folder of .gcode>`). The page tests need
+  `google-chrome`. `dev/make_screenshots.py PLATE.gcode DISC.gcode` redraws `docs/images/` from real exports.
 - Notification, support toggle and log (fake host): `python3 tests/notifications_test.py`
 - Preview panel data (lengths equal the report on real files): `python3 tests/preview_extract_test.py [file.gcode ...]`
 - Preview panel page, rendered headlessly in Chrome (needs `google-chrome`; PNGs go to the given
@@ -254,6 +257,11 @@ non-Bambu printers, see `docs/upstream-proposal-preview-postprocess.md`):
   slicer's time (OrcaSlicer names the file before post-processing). The preview data carries
   `time: {slicer_s, waves_s}` (`_EXPORT_TIME` from the export; slice-time: waves only, `slicer_s` None) and the page shows
   "slicer + waves = total".
+- **Public-release state (v0.12.0)**: `open_panel` defaults to on; `pyclipper==1.4.0` and `numpy>=2.0,<3` are
+  pinned in the PEP 723 header (supply chain: no newer or hijacked release is installed by itself; update the pin
+  deliberately and re-run the tests); every `.py` has an SPDX / copyright header; the research-era files live
+  in `dev/`; `SECURITY.md` states what the plugin does (no network, no subprocess, no dynamic code: re-check with
+  a grep before each release); a `[hidden]` rule in the page CSS keeps tab-only elements hidden in the side panel.
 - **Notification duration (v0.8.2)**: `Important` fades after 20 s, so a notification with the link uses
   `HintNotificationLevel` (300 s; `NotificationManager.hpp` `get_standard_duration`; levels only change the
   duration for a custom notification); warnings never fade. Each capability of a plugin gets a ▶ Run button
@@ -269,7 +277,7 @@ non-Bambu printers, see `docs/upstream-proposal-preview-postprocess.md`):
   with `{command: "preview_ready"}` (a message posted before the page loads can be dropped) and gets
   `{command: "preview", layers, bbox, stats, title}`.
 - **Page**: `PREVIEW_PAGE` is hand-written WebGL 1 (Edge WebView2 on Windows is Chromium with WebGL2;
-  verified with `probes/probe_preview_panel_plugin.py`), no libraries. `tests/preview_page_test.py`
+  verified with `dev/probes/probe_preview_panel_plugin.py`), no libraries. `tests/preview_page_test.py`
   renders it headlessly in Chrome and checks the colours (mouse and slider handlers are not clicked
   by it).
 
@@ -292,9 +300,9 @@ to plugins), except gentle slopes (`min_overhang_mm`, default 0.5); waves printe
 min-time features; top-layer overhangs skipped; with two filaments on one layer of one object
 the waves use the filament active at the end of that object's part of the layer.
 
-## Spike architecture (`wave_overhang_spike_plugin.py`)
+## Spike architecture (`dev/wave_overhang_spike_plugin.py`)
 
-`wave_overhang_spike_plugin.py` has two halves joined by a hand-over store:
+`dev/wave_overhang_spike_plugin.py` has two halves joined by a hand-over store:
 
 - **Capture** (`posSlice`, per object): per layer, overhang = islands minus the layer below,
   opened to drop thin slivers; the areas (contour and holes) and their marker outlines are stored

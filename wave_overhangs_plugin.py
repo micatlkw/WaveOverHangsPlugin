@@ -1,27 +1,35 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pyclipper", "numpy"]
+# dependencies = ["pyclipper==1.4.0", "numpy>=2.0,<3"]
 #
 # [tool.orcaslicer.plugin]
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.11.0"
+# version = "0.12.0"
 # type = "slicing-pipeline"
 # ///
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Wave Overhangs -- slicing-pipeline plugin.
 
 Wave overhangs algorithm: Janis A. Andersons (andersonsjanis).
 Builds on the arc-overhang algorithm by Steven McCulloch (stmcculloch).
 PrusaSlicer integration: Steven McCulloch.
 Port to OrcaSlicer: Dennis Klappe (dennisklappe).
-Python plugin port: WaveOverHangsPlugin.
+Python plugin port: WaveOverHangsPlugin contributors.
 
-Released under the terms of the AGPLv3 or higher (see LICENSE).
+Research behind the algorithm: "Wave-Inspired Path-Planning Strategy for Support-Free Horizontal
+Overhangs in FDM" (2026), https://doi.org/10.2139/ssrn.6640458
+
+Released under the terms of the AGPLv3 or higher (see LICENSE), like the code it is ported from.
+This is an independent plugin; it is not made or endorsed by the OrcaSlicer project.
 
 The generator below is a port of src/libslic3r/WaveOverhangs/WaveOverhangs.cpp of
 https://github.com/dennisklappe/OrcaSlicer-WaveOverhangs, using pyclipper (Clipper 6,
-the library the original calls) on the same scaled integer coordinates.
+by Angus Johnson, the library the original calls) on the same scaled integer coordinates.
+The plugin's notification, settings page and lifecycle handling follow the patterns of OrcaSlicer's
+own sample plugins (AGPL-3.0) and of the Support Fins plugin by gittrahan (MIT).
 
 How it works
 ------------
@@ -118,7 +126,7 @@ _DEFAULTS = {
     "preview":                  1,
     # 1: the side panel opens by itself when slicing finishes (the first result of each slice, not
     # again after an export, so closing it stays closed). 0: open it from the link or the tab.
-    "open_panel":               0,
+    "open_panel":               1,
     # 1: after the waves are added, correct the G-code's print-time information (the M73
     # progress/remaining lines and the "estimated printing time" line), which the slicer wrote
     # without the waves. 0: leave the slicer's numbers as they are.
@@ -1866,6 +1874,7 @@ PREVIEW_PAGE = r"""
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: var(--orca-bg, #1e1e1e);
                color: var(--orca-fg, #ddd); font: 12px sans-serif; }
+  [hidden] { display: none !important; }      /* a rule like ".row label { display: flex }" must not show a hidden element */
   body { display: flex; flex-direction: column; }
   #bar { padding: 6px 8px 4px; display: flex; flex-direction: column; gap: 5px; }
   .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -2040,7 +2049,9 @@ PREVIEW_PAGE = r"""
     if (!any) return;
     cam.tx = (lo[0] + hi[0]) / 2; cam.ty = (lo[1] + hi[1]) / 2; cam.tz = (lo[2] + hi[2]) / 2;
     var diag = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], S.mode === "layer" ? 0 : hi[2] - lo[2]) || 10;
-    cam.dist = diag * 0.75 / Math.tan(FOV / 2) + 2;
+    // the bounding sphere of the content fits the view; a narrow (portrait) panel needs more room sideways
+    var aspect = Math.min(1, Math.max(0.2, canvas.clientWidth / Math.max(1, canvas.clientHeight)));
+    cam.dist = diag * 0.55 / (Math.tan(FOV / 2) * aspect) + 2;
   }
 
   function resize() {
@@ -2333,6 +2344,14 @@ def extract_preview(lines, e_relative, tol_mm=0.02):
             kind, pts = k, [start]
         pts.append((mv["x1"], mv["y1"]))
     flush()
+    # Printing one object at a time repeats every layer height once per object: merge layers of the
+    # same height, so the slider runs through the heights in order, as in the slice-time preview.
+    merged = {}
+    for layer in layers:
+        m = merged.setdefault(_zkey(layer["z"]), {"z": layer["z"], "w": [], "k": [], "c": []})
+        for kind in ("w", "k", "c"):
+            m[kind].extend(layer[kind])
+    layers = [merged[zk] for zk in sorted(merged)]
     return {"layers": layers, "bbox": [lo[0], lo[1], hi[0], hi[1]] if layers and lo[0] < 1e17 else None,
             "stats": stats}
 
@@ -2769,7 +2788,7 @@ def _inject_all(lines, captures, cfg, report, notes):
             report.append(_adjust_time(lines))
 
 
-_VERSION = "0.11.0"
+_VERSION = "0.12.0"
 
 
 # ============================================================================

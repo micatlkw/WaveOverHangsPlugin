@@ -1,9 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Test of extract_preview(), the preview panel's data, outside OrcaSlicer.
 
     python3 tests/preview_extract_test.py [real.gcode ...]
 
 Needs pyclipper and numpy. Checks on synthetic G-code (always) and on any real exported files
-given (or found in the Downloads folder of this machine):
+given (or found in the folder named by WAVE_TEST_GCODE_DIR):
   - the wave and kept-wall lengths equal what the report in the file says was injected;
   - one entry per layer, in order, with the right z; waves only on the layers that have blocks;
   - polylines are flat lists of x, y pairs inside the bounding box.
@@ -59,6 +61,11 @@ def synthetic():
     check(waved == [gi.WAVE_Z], "synthetic: waves only on z=%s (got %s)" % (gi.WAVE_Z, waved))
     check(all(len(l["c"]) == len(gi.INSTANCES) for l in pv["layers"]),
           "synthetic: the slicer's outer wall of every copy is on every layer as context")
+    # printing one object at a time repeats every layer height: one entry per height, in order
+    twice = w.extract_preview(lines + lines, True)
+    check([l["z"] for l in twice["layers"]] == gi.ZS and
+          all(len(a["c"]) == 2 * len(b["c"]) for a, b in zip(twice["layers"], w.extract_preview(lines, True)["layers"])),
+          "synthetic: layer heights repeated by a second object are merged, in order")
     plain = w.extract_preview(lines, True)
     check(plain["stats"]["wave_mm"] == 0 and not any(l["w"] or l["k"] for l in plain["layers"]),
           "synthetic: a file without waves has none")
@@ -81,7 +88,9 @@ def real(path):
     if k:
         check(close(pv["stats"]["wall_mm"], float(k.group(1)), 3.0 + 0.01 * float(k.group(1))),
               "%s: kept wall %.1f mm vs report %s (simplified)" % (name, pv["stats"]["wall_mm"], k.group(1)))
-    tags = sum(1 for l in lines if w._is_layer_tag(l.strip()))
+    # one entry per layer height (printing by object repeats the heights once per object)
+    heights = {w._zkey(float(l.split(":", 1)[1])) for l in lines if l.startswith((";Z:", "; Z_HEIGHT:"))}
+    tags = len(heights)
     check(structure_ok(pv, tags), "%s: %d layers, polylines well formed" % (name, len(pv["layers"])))
     blocks = sum(1 for l in lines if l.startswith(w._TAG + "_START"))
     waved = sum(1 for l in pv["layers"] if l["w"])
@@ -93,8 +102,9 @@ def real(path):
 
 def main():
     synthetic()
-    files = sys.argv[1:] or sorted(glob.glob("/path/to/your/exports/OverhangWaveTest_PLA_*.gcode")
-                                   + glob.glob("/path/to/your/exports/waveoverhangs-207-wall-loop.gcode"))
+    # Real exported files are optional: pass them, or set WAVE_TEST_GCODE_DIR to a folder of exports.
+    folder = os.environ.get("WAVE_TEST_GCODE_DIR")
+    files = sys.argv[1:] or (sorted(glob.glob(os.path.join(folder, "*.gcode"))) if folder else [])
     for path in files:
         real(path)
     print("all OK" if ok else "FAILURES")

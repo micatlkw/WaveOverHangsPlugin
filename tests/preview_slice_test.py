@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Test of the preview built from the slice (before any export), outside OrcaSlicer.
 
     python3 tests/preview_slice_test.py

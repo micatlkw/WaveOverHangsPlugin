@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Test of the print-time correction (M73 lines, the estimate line, the preview's time), outside OrcaSlicer.
 
     python3 tests/print_time_test.py
@@ -90,7 +92,8 @@ def synthetic():
 
 
 def real_files():
-    files = sorted(glob.glob("/path/to/your/exports/*.gcode"))
+    folder = os.environ.get("WAVE_TEST_GCODE_DIR")      # optional: a folder of real exports
+    files = sorted(glob.glob(os.path.join(folder, "*.gcode"))) if folder else []
     parsed = 0
     for path in files:
         with open(path, encoding="utf-8", errors="surrogateescape", newline="") as f:

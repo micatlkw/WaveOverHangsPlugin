@@ -8,7 +8,9 @@
 # version = "0.0.1"
 # type = "slicing-pipeline"
 # ///
-"""Preview Panel Probe -- step 0 of the wave preview panel (see HANDOFF.md).
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 WaveOverHangsPlugin contributors
+"""Preview Panel Probe -- step 0 of the wave preview panel (see docs/development-notes.md).
 
 Install it, pick it as the slicing pipeline plugin (Others > Slicing Pipeline Plugin), slice
 anything. When slicing finishes it opens a docked panel on the right (from the lifecycle event, on

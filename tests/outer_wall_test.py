@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Test of the outer_walls setting (normal walls kept along the overhang's edge).
 
     python3 tests/outer_wall_test.py [out.png]

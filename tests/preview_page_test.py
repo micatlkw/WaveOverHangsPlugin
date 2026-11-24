@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Test of the preview panel page, rendered headlessly in Chrome.
 
     python3 tests/preview_page_test.py [real.gcode] [out_dir]
@@ -64,12 +66,12 @@ window.__DATA__ = %s;
 """
 
 
-def build_html(data, title, out_dir, tab=False):
+def build_html(data, title, out_dir, tab=False, extra=""):
     data = dict(data, title=title) if data is not None else None
     html = w.PREVIEW_PAGE
     if tab:     # what WavePreviewTab.get_ui() adds
         html = html.replace('<div id="bar">', '<script>window.__WAVE_TAB__ = true;</script>\n<div id="bar">', 1)
-    html = html.replace("<div id=\"bar\">", STUB % json.dumps(data) + "<div id=\"bar\">", 1)
+    html = html.replace("<div id=\"bar\">", STUB % json.dumps(data) + "<div id=\"bar\">", 1) + extra
     path = os.path.join(out_dir, "page.html")
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -93,10 +95,12 @@ def colour_counts(png):
     img = img[110:-60]      # the drawing area only: not the toolbar (teal outline) or the text below
     px = (img * 255).round().astype(int).reshape(-1, 3)
 
-    def near(rgb, tol):
-        return int((np.abs(px - np.array(rgb)).max(axis=1) <= tol).sum())
-    return {"waves": near((26, 217, 179), 40), "kept": near((255, 140, 26), 40),
-            "outer": near((158, 158, 168), 60) - 0, "pixels": len(px)}
+    r, g, b = px[:, 0], px[:, 1], px[:, 2]
+    # by hue, not exact colour: one-pixel lines are anti-aliased into the dark background
+    teal = (g > 60) & (g > r + 35) & (b > r + 20)
+    orange = (r > 80) & (r > g + 25) & (g > b + 10)
+    grey = (np.abs(r - g) < 22) & (np.abs(g - b) < 22) & (r > 70)
+    return {"waves": int(teal.sum()), "kept": int(orange.sum()), "outer": int(grey.sum()), "pixels": len(px)}
 
 
 def main():
@@ -105,9 +109,9 @@ def main():
         return 0
     real = next((a for a in sys.argv[1:] if a.endswith(".gcode")), None)
     out_dir = os.path.abspath(next((a for a in sys.argv[1:] if os.path.isdir(a)), None) or tempfile.mkdtemp())
-    if not real:
-        found = glob.glob("/path/to/your/exports/waveoverhangs-207-wall-loop.gcode")
-        real = found[0] if found else None
+    if not real and os.environ.get("WAVE_TEST_GCODE_DIR"):      # optional: a real exported file with waves
+        found = sorted(glob.glob(os.path.join(os.environ["WAVE_TEST_GCODE_DIR"], "*.gcode")))
+        real = next((f for f in found if "WAVE_OVERHANGS_START" in open(f, errors="replace").read()), None)
     data, title = load_data(real)
     data["time"] = {"slicer_s": 1858, "waves_s": 1740}      # 31 min + 29 min, as the plugin sends after an export
     layers = data["layers"]
@@ -121,13 +125,16 @@ def main():
           "with no data the page says there are no waves yet")
     import re
 
-    def side_button(tab):
-        dom_ = chrome(build_html(data, title, out_dir, tab=tab), "", ["--dump-dom", "--virtual-time-budget=4000"]).stdout
-        m = re.search(r'<label[^>]*id="sidewrap"[^>]*>', dom_)
-        return m.group(0) if m else None
-    tag_tab, tag_side = side_button(True), side_button(False)
-    check(tag_tab and "hidden" not in tag_tab, "the tab's page shows the side panel checkbox")
-    check(tag_side and "hidden" in tag_side, "the side panel's page does not")
+    shown_js = ('<script>setTimeout(function () { document.documentElement.setAttribute("data-side", '
+                'getComputedStyle(document.getElementById("sidewrap")).display); }, 300);</script>')
+
+    def side_display(tab):       # what is really drawn, not just the attribute
+        dom_ = chrome(build_html(data, title, out_dir, tab=tab, extra=shown_js), "",
+                      ["--dump-dom", "--virtual-time-budget=4000"]).stdout
+        m = re.search(r'data-side="([^"]*)"', dom_)
+        return m.group(1) if m else None
+    check(side_display(True) not in (None, "none"), "the tab's page shows the side panel checkbox")
+    check(side_display(False) == "none", "the side panel's page does not draw it")
     path = build_html(data, title, out_dir)
     dom = chrome(path, "", ["--dump-dom", "--virtual-time-budget=4000"]).stdout
     check("Estimated print time: 31 min from the slicer + 29 min for the waves = 1 h 0 min" in dom,
@@ -156,12 +163,13 @@ def main():
     for name, c in counts.items():
         print("     %-15s waves %6d px, kept %6d px, outer %6d px" % (name, c["waves"], c["kept"], c["outer"]))
     if counts:
-        check(counts["3d_all"]["waves"] > 200 and counts["3d_all"]["outer"] > 200, "3D view shows waves and outer walls")
-        check(counts["3d_waved"]["waves"] > 200, "3D view of the waved layers shows waves")
+        lots = 200 if real else 3          # a real plate has far more lines than the synthetic one
+        check(counts["3d_all"]["waves"] > lots and counts["3d_all"]["outer"] > lots, "3D view shows waves and outer walls")
+        check(counts["3d_waved"]["waves"] > lots, "3D view of the waved layers shows waves")
         if kept:
-            check(counts["layer_kept"]["kept"] > 50 and counts["layer_kept"]["waves"] > 50,
+            check(counts["layer_kept"]["kept"] > lots // 4 and counts["layer_kept"]["waves"] > lots // 4,
                   "layer view shows waves and kept walls")
-            check(counts["layer_no_waves"]["waves"] == 0 and counts["layer_no_waves"]["kept"] > 50,
+            check(counts["layer_no_waves"]["waves"] == 0 and counts["layer_no_waves"]["kept"] > lots // 4,
                   "waves can be hidden, kept walls stay")
     print("all OK" if ok else "FAILURES")
     return 0 if ok else 1

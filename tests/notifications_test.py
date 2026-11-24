@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Test of the slice notification, the per-object support toggle and the log, outside OrcaSlicer.
 
     python3 tests/notifications_test.py
@@ -343,11 +345,12 @@ def main():
         return c
 
     panels.clear(); w._PANEL = None; shown.clear(); links.clear()
-    slice_done({})
-    check(not panels and links[-1][0] == "Show waves", "open_panel off (the default): the panel is not opened by itself")
+    slice_done({"open_panel": 0})
+    check(not panels and links[-1][0] == "Show waves", "open_panel off: the panel is not opened by itself")
     panels.clear(); w._PANEL = None
-    cap = slice_done({"open_panel": 1})
-    check(len(panels) == 1 and cap.panel is panels[0], "open_panel on: the panel opens by itself after the slice")
+    cap = slice_done({})
+    check(len(panels) == 1 and cap.panel is panels[0] and w._DEFAULTS["open_panel"] == 1,
+          "open_panel is on by default: the panel opens by itself after the slice")
     panels[0].open = False
     cap.panel.kw["on_close"]()
     cap._store_preview(gctx, {"preview": 1}, exported, True, True)

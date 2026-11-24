@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["shapely"]
+# dependencies = ["shapely==2.2.0"]
 #
 # [tool.orcaslicer.plugin]
 # name = "Probe: shapely"
@@ -9,6 +9,8 @@
 # version = "0.01"
 # type = "script"
 # ///
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Dependency probe for step 3 (porting the wave generator).
 
 Install through the Plugins dialog. If the install fails, OrcaSlicer shows

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Test of the settings page, rendered headlessly in Chrome.
 
     python3 tests/config_page_test.py [out_dir]
@@ -86,7 +88,7 @@ def main():
     saved = json.loads(attr(dom, "saved") or "{}")
     check(set(saved) == set(keys), "nothing stored: Save writes all %d settings (%s missing)"
           % (len(keys), sorted(set(keys) - set(saved))))
-    check(saved.get("open_panel") == 0 and saved.get("preview") == 1 and saved.get("pattern") == "smart"
+    check(saved.get("open_panel") == 1 and saved.get("preview") == 1 and saved.get("pattern") == "smart"
           and saved.get("min_overhang_mm") == 0.5 and saved.get("apply_to") == "unsupported",
           "and they are the defaults, open_panel among them")
     check(all(abs(saved[k] - w._DEFAULTS[k]) < 1e-9 for k in keys if not isinstance(w._DEFAULTS[k], str)),
@@ -121,7 +123,7 @@ def main():
     check(attr(dom, "restored") == "1", "Restore defaults asks the host for the defaults")
 
     # 5. a change is marked
-    dom, _ = run({}, 'setTimeout(function () { var c = document.getElementById("f_open_panel"); c.checked = true;'
+    dom, _ = run({}, 'setTimeout(function () { var c = document.getElementById("f_open_panel"); c.checked = !c.checked;'
                      ' c.dispatchEvent(new Event("change")); }, 100);', out_dir, "config_changed")
     check("1 unsaved change" in dom, "changing a setting says how many are unsaved")
     print("pictures:", png, png2)

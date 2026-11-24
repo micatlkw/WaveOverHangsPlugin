@@ -1,7 +1,9 @@
-# Handoff: next steps for route 1
+# Development notes
 
-Written by another session after the first real run of the spike (see "Current state" in
-CLAUDE.md). Delete this file once the steps are done or folded into CLAUDE.md.
+A log of how the plugin was built and tested in OrcaSlicer, step by step: what each step set out to
+check, what the real runs showed, and what was left open. It is kept for maintainers; the current
+design is in `CLAUDE.md` and the user documentation in `README.md`. The sections are in the order
+they happened, and the later ones supersede the earlier ones where they disagree.
 
 ## 1. Close out the spike — done
 
@@ -190,8 +192,7 @@ panel open and it should refresh. Also the v0.6.0 checks (notifications, Enable 
 log file).
 
 Real run of 0.7.0/0.7.1 (user: no notification, no preview): read from the user's OrcaSlicer data
-folder (`%APPDATA%/OrcaSlicer/orca_plugins/wave_overhangs_plugin.py/wave_overhangs_log.jsonl`,
-readable from WSL as `%APPDATA%/OrcaSlicer/`). Cause: after reinstalling
+folder (`%APPDATA%/OrcaSlicer/orca_plugins/wave_overhangs_plugin.py/wave_overhangs_log.jsonl`). Cause: after reinstalling
 the plugin OrcaSlicer reused the cached slice (SliceStarted -> SliceGeometryFinished in the same
 second, no `slice` entry), so the plugin's posSlice never ran, the reloaded module had no captures,
 the export said "nothing captured" in the file only, so no notes, no preview data. The lifecycle
