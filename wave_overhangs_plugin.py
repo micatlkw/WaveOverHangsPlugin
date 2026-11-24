@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.7.2"
+# version = "0.7.3"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhangs -- slicing-pipeline plugin.
@@ -2342,7 +2342,7 @@ def _inject_all(lines, captures, cfg, report, notes):
                       % _minutes_text(minutes), "info"))
 
 
-_VERSION = "0.7.2"
+_VERSION = "0.7.3"
 
 
 # ============================================================================
@@ -2415,8 +2415,11 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
                 pass
         return None
 
+    _preview_enabled = True
+
     def _slice(self, ctx):
         p = _params(self)
+        self._preview_enabled = p["preview"] != 0
         started = time.time()
         skip = self._skip_reason(ctx, p)
         cap, cuts = _generate_object(ctx, p, waves=skip is None)
@@ -2596,8 +2599,13 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
             if not notes:
                 return
             if any(level == "slice" for _, level in notes) and not any("exported G-code" in t for t, _ in notes):
-                notes.append(("The waves are added to the G-code when it is exported; except on Bambu printers "
-                              "the preview doesn't show them.", "info"))
+                if self._preview_enabled:
+                    notes.append(("The waves are added when you export the G-code. After exporting, a notification "
+                                  "offers Show waves; OrcaSlicer's own preview never shows them (except on Bambu "
+                                  "printers).", "info"))
+                else:
+                    notes.append(("The waves are added to the G-code when it is exported; except on Bambu printers "
+                                  "the preview doesn't show them.", "info"))
             ui = orca.host.ui
             level = getattr(ui.NotificationLevel, notification_level(notes))
             if fresh:

@@ -148,7 +148,7 @@ def main():
     w._note("Wave Overhangs, part2: waves on 3 layer(s), about 4 min", "slice")
     cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
     check(len(shown) == 1 and shown[0][0] == "Important" and "part2" in shown[0][1]
-          and "preview doesn't show them" in shown[0][1], "slice result shown once, with the preview hint")
+          and "offers Show waves" in shown[0][1], "slice result shown once, with the export hint")
     shown.clear()
     cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
     check(not shown, "nothing shown twice")
