@@ -10,7 +10,6 @@
 # type = "slicing-pipeline"
 # ///
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Wave Overhangs -- slicing-pipeline plugin.
 
 Wave overhangs algorithm: Janis A. Andersons (andersonsjanis).

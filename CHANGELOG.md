@@ -8,7 +8,7 @@ the exported G-code (`; WAVE_OVERHANGS version ...`).
   off in the settings).
 - `pyclipper` is pinned to `1.4.0` and `numpy` to `>=2.0,<3`, so a newer or hijacked release is not
   installed automatically.
-- Licence and copyright notices on every source file; fuller credits; `SECURITY.md`,
+- A licence identifier (SPDX) on every source file; fuller credits; `SECURITY.md`,
   `CONTRIBUTING.md`, this changelog and a user guide with pictures.
 - The research-era files moved to `dev/`; the tests no longer need any local files.
 

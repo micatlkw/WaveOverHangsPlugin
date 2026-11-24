@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Test of extract_preview(), the preview panel's data, outside OrcaSlicer.
 
     python3 tests/preview_extract_test.py [real.gcode ...]

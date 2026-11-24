@@ -312,7 +312,6 @@ This plugin stands on other people's work:
 
 **License:** [GNU Affero General Public License v3.0 or later](LICENSE) (`AGPL-3.0-or-later`), like the code
 it is ported from. You may use, share and change it under those terms; a changed version must stay under
-the same licence and make its source available. Copyright (C) 2026 WaveOverHangsPlugin contributors.
-There is no warranty: you print at your own risk.
+the same licence and make its source available. There is no warranty: you print at your own risk.
 
 See also: [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) · [SECURITY.md](SECURITY.md)

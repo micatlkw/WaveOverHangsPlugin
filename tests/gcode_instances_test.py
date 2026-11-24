@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Test of the G-code half with several objects and copies, outside OrcaSlicer.
 
     python3 tests/gcode_instances_test.py

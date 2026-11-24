@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Test of the preview panel page, rendered headlessly in Chrome.
 
     python3 tests/preview_page_test.py [real.gcode] [out_dir]

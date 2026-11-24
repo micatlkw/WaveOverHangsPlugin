@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Test of the slice notification, the per-object support toggle and the log, outside OrcaSlicer.
 
     python3 tests/notifications_test.py

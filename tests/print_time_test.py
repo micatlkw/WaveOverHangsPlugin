@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Test of the print-time correction (M73 lines, the estimate line, the preview's time), outside OrcaSlicer.
 
     python3 tests/print_time_test.py

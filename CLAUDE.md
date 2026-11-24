@@ -259,7 +259,7 @@ non-Bambu printers, see `docs/upstream-proposal-preview-postprocess.md`):
   "slicer + waves = total".
 - **Public-release state (v0.12.0)**: `open_panel` defaults to on; `pyclipper==1.4.0` and `numpy>=2.0,<3` are
   pinned in the PEP 723 header (supply chain: no newer or hijacked release is installed by itself; update the pin
-  deliberately and re-run the tests); every `.py` has an SPDX / copyright header; the research-era files live
+  deliberately and re-run the tests); every `.py` has an SPDX licence identifier (no copyright line, by the maintainer's choice); the research-era files live
   in `dev/`; `SECURITY.md` states what the plugin does (no network, no subprocess, no dynamic code: re-check with
   a grep before each release); a `[hidden]` rule in the page CSS keeps tab-only elements hidden in the side panel.
 - **Notification duration (v0.8.2)**: `Important` fades after 20 s, so a notification with the link uses

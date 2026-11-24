@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Render the pictures used in README.md (docs/images/) from real exported G-code.
 
     python3 dev/make_screenshots.py PLATE.gcode DISC.gcode [out_dir]

@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Copyright (C) 2026 WaveOverHangsPlugin contributors
 """Test of the min_overhang_mm setting (gentle slopes keep the slicer's walls).
 
     python3 tests/min_overhang_test.py [out.png]
