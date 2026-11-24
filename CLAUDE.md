@@ -18,7 +18,7 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 
 Current state:
 
-- `wave_overhangs_plugin.py` — the plugin (v0.10.0: several objects and copies per plate;
+- `wave_overhangs_plugin.py` — the plugin (v0.10.1: several objects and copies per plate;
   gentle slopes keep the slicer's walls, `min_overhang_mm` = 0.5; one wall kept along the
   edge of wide overhangs, `outer_walls` = 1). Ports the fork's generator with pyclipper
   and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
@@ -230,9 +230,12 @@ non-Bambu printers, see `docs/upstream-proposal-preview-postprocess.md`):
 - **Side panel from the tab and automatically (v0.10.0)**: a tab cannot be a one-click action: selecting it
   shows its page, a plugin has no API to switch tabs (`PluginHostApp.cpp` Plater binding: model, dirty
   flags, project path), and a dock panel only shows in Prepare/Preview. So the tab's page (the same
-  `PREVIEW_PAGE`, told `window.__WAVE_TAB__` by `get_ui()`) has an "Open side panel" button that posts
-  `open_side_panel`; `WavePreviewTab.on_message` calls `show_preview()` and answers `{command: "info"}` with
-  where the panel will show. `open_panel` = 1 opens the side panel by itself: `_slice` sets `_AUTO_OPEN`,
+  `PREVIEW_PAGE`, told `window.__WAVE_TAB__` by `get_ui()`) has a "show side panel" checkbox (v0.10.1;
+  it was a button that gave no sign it had worked). It posts `{command: "side_panel", open}`;
+  `WavePreviewTab.on_message` calls `show_preview()` / `close_side_panel()`, and `_notify_panel_state()`
+  (called from `show_preview()`, `_panel_closed()` and the replies) posts `{command: "panel_state", open}` so
+  the checkbox mirrors the panel however it was opened or closed (link, Plugins button, auto-open, its own
+  x). With nothing to show the page gets an `info` line and the box goes back to unticked. `open_panel` = 1 opens the side panel by itself: `_slice` sets `_AUTO_OPEN`,
   the first fresh preview after it (`_take_auto_open()`) opens the panel, later exports only refresh an
   open one (a panel the user closed stays closed).
 - **Notification duration (v0.8.2)**: `Important` fades after 20 s, so a notification with the link uses

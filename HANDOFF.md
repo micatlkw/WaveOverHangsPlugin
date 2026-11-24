@@ -258,7 +258,15 @@ Tests: `tests/notifications_test.py` (auto-open on/off, not reopened by the expo
 To check: set `open_panel` to 1 in the plugin configuration, slice: the panel should be docked in Preview;
 close it, export: it should stay closed. In the Wave Preview tab, click Open side panel, then Preview.
 
-## 19. Next
+## 19. Checkbox instead of a button (user feedback on 0.10.0) — done in code, not yet run
 
-Check 0.10.0 (and the tab from 0.9.0) in OrcaSlicer, then push and tag (v0.8.x to v0.10.0 are untagged).
-Also: add the "second window" sentence to the preview proposal; README note for macOS.
+0.10.0 worked, but clicking "Open side panel" gave no sign it had done anything, and a tab cannot jump to
+Preview (no tab-switching API). 0.10.1: the button is a "show side panel" checkbox that mirrors whether the
+side panel is open (bold text "side panel open: see the Prepare or Preview tab"), unticking closes it,
+and it follows the panel when it is opened/closed any other way. Tests in `tests/notifications_test.py`;
+layout checked in Chrome (wide and narrow).
+
+## 20. Next
+
+Check 0.10.1 in OrcaSlicer, then push and tag (v0.8.x to v0.10.x are untagged). Also: add the "second
+window" sentence to the preview proposal; README note for macOS.

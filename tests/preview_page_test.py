@@ -122,10 +122,10 @@ def main():
 
     def side_button(tab):
         dom_ = chrome(build_html(data, title, out_dir, tab=tab), "", ["--dump-dom", "--virtual-time-budget=4000"]).stdout
-        m = re.search(r'<button[^>]*id="side"[^>]*>', dom_)
+        m = re.search(r'<label[^>]*id="sidewrap"[^>]*>', dom_)
         return m.group(0) if m else None
     tag_tab, tag_side = side_button(True), side_button(False)
-    check(tag_tab and "hidden" not in tag_tab, "the tab's page shows the Open side panel button")
+    check(tag_tab and "hidden" not in tag_tab, "the tab's page shows the side panel checkbox")
     check(tag_side and "hidden" in tag_side, "the side panel's page does not")
     path = build_html(data, title, out_dir)
     dom = chrome(path, "", ["--dump-dom", "--virtual-time-budget=4000"]).stdout

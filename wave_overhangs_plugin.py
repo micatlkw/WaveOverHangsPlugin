@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.10.0"
+# version = "0.10.1"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhangs -- slicing-pipeline plugin.
@@ -1868,6 +1868,7 @@ PREVIEW_PAGE = r"""
   canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; outline: none; }
   #info, #status { padding: 2px 8px 6px; color: var(--orca-muted, #999); font-size: 11px; }
   .bad { color: #e5534b; }
+  #sidewrap { margin-left: auto; padding-left: 10px; border-left: 1px solid var(--orca-border, #666); }
   .sw { display: inline-block; width: 10px; height: 3px; margin: 0 3px 2px 0; vertical-align: middle; }
 </style>
 <div id="bar">
@@ -1875,10 +1876,10 @@ PREVIEW_PAGE = r"""
     <button type="button" id="m3d" class="on">3D</button>
     <button type="button" id="mlayer">Layer</button>
     <button type="button" id="fit" title="Fit the view to the waves (double-click the view)">Fit</button>
-    <button type="button" id="side" hidden title="Open this preview beside the 3D view (it shows in the Prepare and Preview tabs)">Open side panel</button>
     <label><input type="checkbox" id="sw" checked><span class="sw" style="background:#1ad9b3"></span>waves</label>
     <label><input type="checkbox" id="sk" checked><span class="sw" style="background:#ff8c1a"></span>kept walls</label>
     <label><input type="checkbox" id="sc" checked><span class="sw" style="background:#9e9ea8"></span>outer walls</label>
+    <label id="sidewrap" hidden title="The same preview in a panel beside the 3D view. It shows in the Prepare and Preview tabs."><input type="checkbox" id="side"><span id="sidetext"></span></label>
   </div>
   <div class="row"><span id="lt" style="min-width:90px">top layer</span><input type="range" id="to" min="0" max="0" value="0">
     <button type="button" id="pw" title="Previous layer with waves">&#9664; waves</button>
@@ -2116,9 +2117,18 @@ PREVIEW_PAGE = r"""
   $("m3d").addEventListener("click", function () { setMode("3d"); });
   $("mlayer").addEventListener("click", function () { setMode("layer"); });
   $("fit").addEventListener("click", function () { fit(); draw(); });
-  if (window.__WAVE_TAB__) {      // only the tab has the button: the side panel is already the side panel
-    $("side").hidden = false;
-    $("side").addEventListener("click", function () { orca.postMessage({ command: "open_side_panel" }); });
+  function setSide(open) {        // mirrors whether the side panel is really open
+    $("side").checked = !!open;
+    $("sidetext").textContent = open ? "side panel open: see the Prepare or Preview tab"
+                                     : "show side panel (in Prepare and Preview)";
+    $("sidewrap").style.fontWeight = open ? "bold" : "normal";
+  }
+  if (window.__WAVE_TAB__) {      // only the tab has it: the side panel is already the side panel
+    $("sidewrap").hidden = false;
+    setSide(false);
+    $("side").addEventListener("change", function () {
+      orca.postMessage({ command: "side_panel", open: this.checked });
+    });
   }
   [["sw", "w"], ["sk", "k"], ["sc", "c"]].forEach(function (p) {
     $(p[0]).addEventListener("change", function () { S.show[p[1]] = this.checked; draw(); });
@@ -2172,6 +2182,7 @@ PREVIEW_PAGE = r"""
     orca.onMessage(function (msg) {
       if (!msg) return;
       if (msg.command === "preview") { try { load(msg); } catch (e) { fail(e.message || e); } }
+      else if (msg.command === "panel_state") setSide(msg.open);
       else if (msg.command === "info") statusEl.textContent = msg.text || "";
       else if (msg.command === "empty" && !data)
         statusEl.textContent = "No waves to show yet. Select Wave Overhangs as the Slicing Pipeline Plugin, " +
@@ -2436,7 +2447,7 @@ def _inject_all(lines, captures, cfg, report, notes):
         notes.append(("Wave Overhangs: waves added, %s." % _minutes_text(minutes), "info"))
 
 
-_VERSION = "0.10.0"
+_VERSION = "0.10.1"
 
 
 # ============================================================================
@@ -2468,6 +2479,20 @@ def _preview_payload():
     return None if pv is None else dict(pv["data"], command="preview", title=pv["title"])
 
 
+def _panel_is_open():
+    return _PANEL is not None and _PANEL.is_open()
+
+
+def _notify_panel_state():
+    """Tell the tab whether the side panel is open, so its checkbox shows the truth."""
+    page = _PAGE
+    if page is not None:
+        try:
+            page.post_message({"command": "panel_state", "open": _panel_is_open()})
+        except Exception:
+            pass
+
+
 def show_preview():
     """Open the preview panel, or bring the open one forward and send it the latest data.
     UI thread: the notification link, the lifecycle event, the Show Wave Preview action."""
@@ -2475,14 +2500,24 @@ def show_preview():
     payload = _preview_payload()
     if payload is None:
         return "no preview data"
-    if _PANEL is not None and _PANEL.is_open():
+    if _panel_is_open():
         _PANEL.show()
         _PANEL.post(payload)
+        _notify_panel_state()
         return "preview panel refreshed"
     _PANEL = orca.host.ui.create_dock_panel(
         html=PREVIEW_PAGE, title="Wave preview", width=480, height=640,
         on_message=_panel_message, on_close=_panel_closed, dock="right")
+    _notify_panel_state()
     return "preview panel opened"
+
+
+def close_side_panel():
+    """Close the side panel (the tab's checkbox). Its on_close callback updates the checkbox."""
+    if _panel_is_open():
+        _PANEL.close()
+    else:
+        _panel_closed()
 
 
 def _panel_message(message):
@@ -2495,6 +2530,7 @@ def _panel_message(message):
 def _panel_closed():
     global _PANEL
     _PANEL = None
+    _notify_panel_state()
 
 
 def _slice_summary(captures, print_speed):
@@ -2809,16 +2845,19 @@ class WavePreviewTab(orca.pages.PagesPluginCapabilityBase):
         if command == "preview_ready":
             payload = _preview_payload()
             self.post_message(payload if payload is not None else {"command": "empty"})
-        elif command == "open_side_panel":
+            _notify_panel_state()
+        elif command == "side_panel":
             try:
-                result = show_preview()
+                if data.get("open"):
+                    result = show_preview()
+                    if result == "no preview data":
+                        self.post_message({"command": "info", "text":
+                                           "Nothing to show in the side panel yet. Slice a plate that has overhangs first."})
+                else:
+                    close_side_panel()
             except Exception as e:
-                _write_log({"event": "open_side_panel", "error": "%s: %s" % (type(e).__name__, e)})
-                result = None
-            self.post_message({"command": "info", "text": (
-                "Side panel opened. It shows in the Prepare and Preview tabs: click one of them." if result and "opened" in result
-                else "Side panel refreshed. It shows in the Prepare and Preview tabs." if result and "refreshed" in result
-                else "Nothing to show in the side panel yet. Slice a plate that has overhangs first.")})
+                _write_log({"event": "side_panel", "error": "%s: %s" % (type(e).__name__, e)})
+            _notify_panel_state()
 
 
 class ShowWavePreview(orca.script.ScriptPluginCapabilityBase):

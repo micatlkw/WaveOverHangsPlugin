@@ -31,12 +31,15 @@ The preview is in two places, with the same content:
 
 - **The Wave Preview tab**, next to Prepare and Preview. It is always there while the plugin is
   enabled, uses the whole window, and updates itself after every slice and export. (If you have
-  several plugin tabs, the extra ones are behind the ▾ menu at the end of the tab strip.) Its
-  **Open side panel** button opens the side panel; the panel shows in the Prepare and Preview tabs,
-  and OrcaSlicer does not let a plugin switch tabs, so click one of them to see it.
+  several plugin tabs, the extra ones are behind the ▾ menu at the end of the tab strip.) The
+  checkbox at the right of its toolbar, **show side panel**, opens the side panel and shows whether
+  it is open: it turns bold with "side panel open: see the Prepare or Preview tab", and unticking it
+  closes the panel. It also follows the panel when you open or close it another way. The panel shows
+  in the Prepare and Preview tabs, and OrcaSlicer does not let a plugin switch tabs, so click one of
+  them to see it.
 - **A side panel** beside the 3D view, so you can compare with OrcaSlicer's own preview. The
   notification after slicing has a **Show waves** link and stays for 5 minutes (close it with its
-  x); to open the side panel again later, use the tab's **Open side panel** button, or the **Plugins**
+  x); to open the side panel again later, tick the tab's **show side panel** checkbox, or use the **Plugins**
   dialog: expand **Wave Overhangs** and click the ▶ next to **Show Wave Preview**. Set `open_panel`
   to `1` to have the side panel open by itself after every slice.
 

@@ -45,6 +45,10 @@ class FakePanel:
     def show(self):
         self.shows += 1
 
+    def close(self):
+        self.open = False
+        self.kw["on_close"]()
+
 
 def create_dock_panel(**kw):
     panels.append(FakePanel(**kw))
@@ -290,12 +294,15 @@ def main():
           "the tab is named Wave Preview, serves the preview page and remembers its capability")
     w._PREVIEW = None
     tab.on_message(json.dumps({"command": "preview_ready"}))
-    check(tab_posted[-1] == {"command": "empty"}, "with nothing to show the page is told so")
+    def sent(command):
+        return [m for m in tab_posted if m.get("command") == command][-1]
+    check(sent("empty") == {"command": "empty"}, "with nothing to show the page is told so")
     w._PREVIEW = {"data": w.build_slice_preview(ps.synthetic_captures()), "fresh": False, "source": "slice",
                   "title": "from the slice"}
+    w._PANEL = None
     tab.on_message(json.dumps({"command": "preview_ready"}))
-    check(tab_posted[-1]["command"] == "preview" and tab_posted[-1]["title"] == "from the slice"
-          and abs(tab_posted[-1]["stats"]["wave_mm"] - 26.0) < 0.1, "the page gets the data when it asks")
+    check(sent("preview")["title"] == "from the slice" and abs(sent("preview")["stats"]["wave_mm"] - 26.0) < 0.1
+          and sent("panel_state")["open"] is False, "the page gets the data and the panel state when it asks")
     n = len(tab_posted)
     tab.on_message("this is not json")
     tab.on_message(json.dumps({"command": "something else"}))
@@ -306,7 +313,7 @@ def main():
     cap._store_preview(gctx, {"preview": 1}, exported, True, True)
     w._note("Wave Overhangs: waves added, under a minute.", "info")
     cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
-    check(tab_posted and tab_posted[-1]["title"] == "plate.gcode",
+    check(tab_posted and sent("preview")["title"] == "plate.gcode",
           "after an export the tab is updated, even with the side panel closed")
     w._PAGE = None
     cap._store_preview(gctx, {"preview": 1}, exported, True, True)
@@ -357,23 +364,33 @@ def main():
     c.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
     check(len(panels) == n, "an open panel is refreshed by the export, not opened twice")
 
-    # the tab's Open side panel button
+    # the tab's side panel checkbox mirrors whether the side panel is really open
     tab = w.WavePreviewTab()
     tab_posted = []
     tab.post_message = tab_posted.append
     check("window.__WAVE_TAB__ = true" in tab.get_ui() and "window.__WAVE_TAB__" not in w.PREVIEW_PAGE.split("<script>\n(function")[0],
-          "only the tab's page is told it is the tab, so only it shows the button")
+          "only the tab's page is told it is the tab, so only it shows the checkbox")
+
+    def state():
+        return [m["open"] for m in tab_posted if m.get("command") == "panel_state"]
     panels.clear(); w._PANEL = None
     w._PREVIEW = {"data": w.build_slice_preview(ps.synthetic_captures()), "fresh": False, "source": "slice", "title": "t"}
-    tab.on_message(json.dumps({"command": "open_side_panel"}))
-    check(len(panels) == 1 and tab_posted[-1]["command"] == "info" and "Prepare and Preview" in tab_posted[-1]["text"],
-          "the button opens the side panel and tells the page where it will show")
-    tab.on_message(json.dumps({"command": "open_side_panel"}))
-    check(len(panels) == 1 and "refreshed" in tab_posted[-1]["text"], "clicking again refreshes it instead of opening another")
+    tab.on_message(json.dumps({"command": "side_panel", "open": True}))
+    check(len(panels) == 1 and state()[-1] is True, "ticking the checkbox opens the side panel and it stays ticked")
+    tab.on_message(json.dumps({"command": "side_panel", "open": True}))
+    check(len(panels) == 1 and state()[-1] is True, "ticking again refreshes it instead of opening another")
+    tab.on_message(json.dumps({"command": "side_panel", "open": False}))
+    check(not panels[0].open and w._PANEL is None and state()[-1] is False, "unticking closes the side panel")
+    w.show_preview()
+    check(state()[-1] is True, "a panel opened another way (link, Plugins button, auto-open) ticks the checkbox")
+    panels[-1].close()
+    check(state()[-1] is False, "closing the panel with its own x unticks it")
     w._PREVIEW = None
     w._PANEL = None
-    tab.on_message(json.dumps({"command": "open_side_panel"}))
-    check("Nothing to show" in tab_posted[-1]["text"], "with no data the button says so")
+    tab_posted.clear()
+    tab.on_message(json.dumps({"command": "side_panel", "open": True}))
+    check(any("Nothing to show" in m.get("text", "") for m in tab_posted) and state()[-1] is False,
+          "with nothing to show it says so and the checkbox goes back to unticked")
 
     # log
     with open(LOG, encoding="utf-8") as f:
