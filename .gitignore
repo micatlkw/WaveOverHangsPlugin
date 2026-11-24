@@ -14,3 +14,6 @@ __pycache__/
 *.gcode.3mf
 wave_overhangs_log.jsonl
 preview_panel_probe_log.jsonl
+*.swp
+*.swo
+.swp
