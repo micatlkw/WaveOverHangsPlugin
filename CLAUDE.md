@@ -18,7 +18,7 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 
 Current state:
 
-- `wave_overhangs_plugin.py` — the plugin (v0.8.1: several objects and copies per plate;
+- `wave_overhangs_plugin.py` — the plugin (v0.8.2: several objects and copies per plate;
   gentle slopes keep the slicer's walls, `min_overhang_mm` = 0.5; one wall kept along the
   edge of wide overhangs, `outer_walls` = 1). Ports the fork's generator with pyclipper
   and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
@@ -219,6 +219,10 @@ non-Bambu printers, see `docs/upstream-proposal-preview-postprocess.md`):
   so a three-line text hid "Show waves" until expanded. The slice notification is now one short summary
   (`_slice_summary()`: "Wave Overhangs: 18 wave layers, about 45 min."), the export one "waves added, about
   N min."; per-object details are in the log. Keep text + link under ~60 characters.
+- **Notification duration (v0.8.2)**: `Important` fades after 20 s, so a notification with the link uses
+  `HintNotificationLevel` (300 s; `NotificationManager.hpp` `get_standard_duration`; levels only change the
+  duration for a custom notification); warnings never fade. Each capability of a plugin gets a ▶ Run button
+  in the Plugins dialog (`CapabilityCanRun`, `run_script_plugin_capability`).
 - **Reopening (v0.8.1)**: the panel state is module-level (`_PANEL`, `show_preview()`), and a second capability,
   `ShowWavePreview` (a script capability: Plugins dialog > Show Wave Preview), opens/refreshes it from the latest
   data at any time, with a message box when there is nothing yet. The header `type` is display-only, so one

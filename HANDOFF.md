@@ -227,7 +227,16 @@ Bigger idea, not built: a plugin *page* (`PagesPluginCapability`, `get_ui()`) is
 Prepare/Preview in the main window (`PluginPages` in MainFrame), so the preview could live in a tab that can
 not be closed and gets the whole window. Same HTML; messages go through `on_message`/`post_message`.
 
+Run of 0.8.1 (read from the user's data folder): both capabilities loaded ("Collected 2 registered
+capability class(es)"), the slice notification was pushed with its link at 18:31:40 (log
+`notification_pushed`), but the user did not see it (Important level fades after 20 s) and expected a
+tab (the tab was only an idea in the reply, not built). 0.8.2: the notification with the link uses
+`HintNotificationLevel` (stays 300 s); the Plugins dialog has a Run button per capability, so
+"Show Wave Preview" is there; README says how to find it.
+
 ## 17. Next
 
-Check 0.8.1 in OrcaSlicer, then push and tag v0.8.1 (v0.8.0 and v0.7.x are not tagged). Also: add the
-"second window" sentence to the preview proposal; README note for macOS.
+Check 0.8.2 in OrcaSlicer (the notification stays; the Plugins dialog > Wave Overhangs > Show Wave
+Preview opens the panel). If the Plugins-dialog route is too awkward, build the permanent tab (a
+`PagesPluginCapability`). Then push and tag v0.8.2. Also: add the "second window" sentence to the preview
+proposal; README note for macOS.

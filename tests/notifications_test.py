@@ -61,7 +61,8 @@ def push_notification(level, text, hyper="", on_click=None):
 
 orca.host = types.SimpleNamespace(ui=types.SimpleNamespace(
     NotificationLevel=types.SimpleNamespace(ImportantNotificationLevel="Important",
-                                            WarningNotificationLevel="Warning"),
+                                            WarningNotificationLevel="Warning",
+                                            HintNotificationLevel="Hint"),
     push_notification=push_notification, create_dock_panel=create_dock_panel,
     message=lambda text, title="": messages.append((title, text))))
 orca.slicing.Step = types.SimpleNamespace(posSlice="posSlice", posPerimeters="posPerimeters",
@@ -241,6 +242,7 @@ def main():
     cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
     check(len(shown) == 1 and links[-1][0] == "Show waves" and w._PREVIEW["source"] == "slice"
           and not w._SLICE_DIRTY and not panels, "right after slicing, before any export, the link is offered")
+    check(shown[0][0] == "Hint", "the notification with the link stays 5 minutes (Hint level), not 20 s")
     check("\n" not in shown[0][1] and len(shown[0][1]) + len("Show waves") + 1 <= 60,
           "the notification is one short line, so the link shows without expanding: %r" % shown[0][1])
     links[-1][1]()

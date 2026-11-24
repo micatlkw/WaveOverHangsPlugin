@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.8.1"
+# version = "0.8.2"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhangs -- slicing-pipeline plugin.
@@ -170,11 +170,13 @@ def notification_text(notes):
     return "\n".join(lines)
 
 
-def notification_level(notes):
-    """Warnings stay until closed; otherwise Important (20 s; Regular fades after 10 s)."""
+def notification_level(notes, link=False):
+    """Warnings stay until closed. A notification that offers "Show waves" uses the Hint level,
+    which stays on screen for 5 minutes (Important fades after 20 s, Regular after 10 s), so the
+    link is still there when the user looks up from the slicing progress."""
     if any(level == "warning" for _, level in notes):
         return "WarningNotificationLevel"
-    return "ImportantNotificationLevel"
+    return "HintNotificationLevel" if link else "ImportantNotificationLevel"
 
 
 def _minutes_text(minutes):
@@ -2418,7 +2420,7 @@ def _inject_all(lines, captures, cfg, report, notes):
         notes.append(("Wave Overhangs: waves added, %s." % _minutes_text(minutes), "info"))
 
 
-_VERSION = "0.8.1"
+_VERSION = "0.8.2"
 
 
 # ============================================================================
@@ -2738,12 +2740,13 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
             if not notes:
                 return
             ui = orca.host.ui
-            level = getattr(ui.NotificationLevel, notification_level(notes))
+            level = getattr(ui.NotificationLevel, notification_level(notes, bool(fresh)))
             if fresh:
                 ui.push_notification(level, notification_text(notes), "Show waves", self._link_clicked)
             else:
                 ui.push_notification(level, notification_text(notes))
-            _write_log({"event": "notification_pushed", "level": notification_level(notes), "link": bool(fresh)})
+            _write_log({"event": "notification_pushed", "level": notification_level(notes, bool(fresh)),
+                        "text": notification_text(notes), "link": bool(fresh)})
         except Exception as e:  # never break Orca over a notification
             _write_log({"event": "notification", "error": "%s: %s" % (type(e).__name__, e)})
 
