@@ -247,7 +247,18 @@ capability registers); open it (before any slice it says there are no waves yet)
 fill in; export, and it should refresh. Unknowns: whether the tab appears without a restart, the tab
 icon (none), the tab's size/behaviour of WebGL when hidden then shown.
 
-## 18. Next
+## 18. Side panel from the tab, and automatically — done in code, not yet run in OrcaSlicer
 
-Check 0.9.0 in OrcaSlicer, then push and tag (v0.8.x and v0.9.0 are not tagged). Also: add the "second
-window" sentence to the preview proposal; README note for macOS.
+User asked whether the tab could be a button for the side panel. A tab cannot (it always shows its page,
+no tab-switching API, the dock only shows in Prepare/Preview), so 0.10.0 adds (A) `open_panel` (default 0):
+the side panel opens by itself after a slice, once per slice; (B) an "Open side panel" button in the tab.
+Tests: `tests/notifications_test.py` (auto-open on/off, not reopened by the export, the button's replies),
+`tests/preview_page_test.py` (button only in the tab's page).
+
+To check: set `open_panel` to 1 in the plugin configuration, slice: the panel should be docked in Preview;
+close it, export: it should stay closed. In the Wave Preview tab, click Open side panel, then Preview.
+
+## 19. Next
+
+Check 0.10.0 (and the tab from 0.9.0) in OrcaSlicer, then push and tag (v0.8.x to v0.10.0 are untagged).
+Also: add the "second window" sentence to the preview proposal; README note for macOS.

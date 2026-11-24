@@ -31,11 +31,14 @@ The preview is in two places, with the same content:
 
 - **The Wave Preview tab**, next to Prepare and Preview. It is always there while the plugin is
   enabled, uses the whole window, and updates itself after every slice and export. (If you have
-  several plugin tabs, the extra ones are behind the ▾ menu at the end of the tab strip.)
+  several plugin tabs, the extra ones are behind the ▾ menu at the end of the tab strip.) Its
+  **Open side panel** button opens the side panel; the panel shows in the Prepare and Preview tabs,
+  and OrcaSlicer does not let a plugin switch tabs, so click one of them to see it.
 - **A side panel** beside the 3D view, so you can compare with OrcaSlicer's own preview. The
   notification after slicing has a **Show waves** link and stays for 5 minutes (close it with its
-  x); to open the side panel again later, open the **Plugins** dialog, expand **Wave Overhangs** and
-  click the ▶ next to **Show Wave Preview**.
+  x); to open the side panel again later, use the tab's **Open side panel** button, or the **Plugins**
+  dialog: expand **Wave Overhangs** and click the ▶ next to **Show Wave Preview**. Set `open_panel`
+  to `1` to have the side panel open by itself after every slice.
 
 Both show the latest slice or export. The tab says "No waves to show yet" until a slice has
 produced some. The view itself:
@@ -104,6 +107,7 @@ preset. Distances are in mm.
 | `outer_walls` | `1` | Normal walls kept along the edge of wide overhangs, so their side looks like the rest of the object. They are printed right after the waves, innermost first, and the waves fill the area inside them. Chosen automatically per overhang: a wall is kept only where the overhang reaches past it plus two wave lines (about 1.1 mm per layer with the defaults, roughly 80° from vertical at 0.2 mm layers), so the waves inside can carry it. Steeper, narrower overhangs are waved right to the edge, and where one joins a wide overhang only the wide part gets a wall. `0` never keeps a wall. At most the process's wall count. |
 | `apply_to` | `unsupported` | `unsupported`: objects with Orca's **Enable support** on are left alone. `all`: wave every object. |
 | `preview` | `1` | `1` offers the **Show waves** panel after slicing and after an export (see [The wave preview panel](#the-wave-preview-panel)). `0` turns it off. |
+| `open_panel` | `0` | `1` opens the side panel by itself when slicing finishes, so it is already beside OrcaSlicer's preview. Only the first result of each slice does this: if you close the panel, the export that follows does not reopen it. |
 | `enabled` | `1` | `0` only measures and writes the report. Nothing is cut and no waves are added. |
 
 ### Wave shape

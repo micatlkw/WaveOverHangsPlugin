@@ -18,7 +18,7 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 
 Current state:
 
-- `wave_overhangs_plugin.py` — the plugin (v0.9.0: several objects and copies per plate;
+- `wave_overhangs_plugin.py` — the plugin (v0.10.0: several objects and copies per plate;
   gentle slopes keep the slicer's walls, `min_overhang_mm` = 0.5; one wall kept along the
   edge of wide overhangs, `outer_walls` = 1). Ports the fork's generator with pyclipper
   and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
@@ -227,6 +227,14 @@ non-Bambu printers, see `docs/upstream-proposal-preview-postprocess.md`):
   lifecycle handler (`_push_to_tab()`) refreshes it after each slice/export. `on_message(str)` gets the page's
   JSON as a string. The notification link / Plugins action still open the side panel (plugins cannot select a
   tab).
+- **Side panel from the tab and automatically (v0.10.0)**: a tab cannot be a one-click action: selecting it
+  shows its page, a plugin has no API to switch tabs (`PluginHostApp.cpp` Plater binding: model, dirty
+  flags, project path), and a dock panel only shows in Prepare/Preview. So the tab's page (the same
+  `PREVIEW_PAGE`, told `window.__WAVE_TAB__` by `get_ui()`) has an "Open side panel" button that posts
+  `open_side_panel`; `WavePreviewTab.on_message` calls `show_preview()` and answers `{command: "info"}` with
+  where the panel will show. `open_panel` = 1 opens the side panel by itself: `_slice` sets `_AUTO_OPEN`,
+  the first fresh preview after it (`_take_auto_open()`) opens the panel, later exports only refresh an
+  open one (a panel the user closed stays closed).
 - **Notification duration (v0.8.2)**: `Important` fades after 20 s, so a notification with the link uses
   `HintNotificationLevel` (300 s; `NotificationManager.hpp` `get_standard_duration`; levels only change the
   duration for a custom notification); warnings never fade. Each capability of a plugin gets a ▶ Run button

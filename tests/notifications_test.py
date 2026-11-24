@@ -285,7 +285,8 @@ def main():
     tab_posted = []
     tab.post_message = tab_posted.append
     w._PAGE = None
-    check(tab.get_name() == "Wave Preview" and tab.get_ui() == w.PREVIEW_PAGE and w._PAGE is tab,
+    check(tab.get_name() == "Wave Preview" and tab.get_ui().replace("<script>window.__WAVE_TAB__ = true;</script>\n", "") == w.PREVIEW_PAGE
+          and w._PAGE is tab,
           "the tab is named Wave Preview, serves the preview page and remembers its capability")
     w._PREVIEW = None
     tab.on_message(json.dumps({"command": "preview_ready"}))
@@ -319,6 +320,60 @@ def main():
     w.orca.register_capability = old_register
     check([c.__name__ for c in registered] == ["WaveOverhangs", "ShowWavePreview", "WavePreviewTab"],
           "the plugin registers the pipeline plugin, the Show Wave Preview action and the tab")
+
+    # the side panel opens by itself after a slice (open_panel), once per slice
+    def slice_done(config):
+        """A new slice that waved something, then the slicing job completing."""
+        w._STATE.clear()
+        w._STATE.update(ps.synthetic_captures())
+        w._PREVIEW = None
+        w._SLICE_DIRTY = True
+        w._AUTO_OPEN = True
+        w._take_notes()
+        w._note("Wave Overhangs: 1 wave layer, under a minute.", "slice")
+        c = capability(config)
+        c.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
+        return c
+
+    panels.clear(); w._PANEL = None; shown.clear(); links.clear()
+    slice_done({})
+    check(not panels and links[-1][0] == "Show waves", "open_panel off (the default): the panel is not opened by itself")
+    panels.clear(); w._PANEL = None
+    cap = slice_done({"open_panel": 1})
+    check(len(panels) == 1 and cap.panel is panels[0], "open_panel on: the panel opens by itself after the slice")
+    panels[0].open = False
+    cap.panel.kw["on_close"]()
+    cap._store_preview(gctx, {"preview": 1}, exported, True, True)
+    w._note("Wave Overhangs: waves added, under a minute.", "info")
+    cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
+    check(len(panels) == 1 and w._PANEL is None,
+          "a panel closed by the user is not reopened by the export that follows")
+    panels.clear(); w._PANEL = None
+    slice_done({"open_panel": 1})
+    n = len(panels)
+    c = capability({"open_panel": 1})
+    c._store_preview(gctx, {"preview": 1}, exported, True, True)
+    w._note("Wave Overhangs: waves added, under a minute.", "info")
+    c.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
+    check(len(panels) == n, "an open panel is refreshed by the export, not opened twice")
+
+    # the tab's Open side panel button
+    tab = w.WavePreviewTab()
+    tab_posted = []
+    tab.post_message = tab_posted.append
+    check("window.__WAVE_TAB__ = true" in tab.get_ui() and "window.__WAVE_TAB__" not in w.PREVIEW_PAGE.split("<script>\n(function")[0],
+          "only the tab's page is told it is the tab, so only it shows the button")
+    panels.clear(); w._PANEL = None
+    w._PREVIEW = {"data": w.build_slice_preview(ps.synthetic_captures()), "fresh": False, "source": "slice", "title": "t"}
+    tab.on_message(json.dumps({"command": "open_side_panel"}))
+    check(len(panels) == 1 and tab_posted[-1]["command"] == "info" and "Prepare and Preview" in tab_posted[-1]["text"],
+          "the button opens the side panel and tells the page where it will show")
+    tab.on_message(json.dumps({"command": "open_side_panel"}))
+    check(len(panels) == 1 and "refreshed" in tab_posted[-1]["text"], "clicking again refreshes it instead of opening another")
+    w._PREVIEW = None
+    w._PANEL = None
+    tab.on_message(json.dumps({"command": "open_side_panel"}))
+    check("Nothing to show" in tab_posted[-1]["text"], "with no data the button says so")
 
     # log
     with open(LOG, encoding="utf-8") as f:

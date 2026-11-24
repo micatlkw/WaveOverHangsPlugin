@@ -64,9 +64,12 @@ window.__DATA__ = %s;
 """
 
 
-def build_html(data, title, out_dir):
+def build_html(data, title, out_dir, tab=False):
     data = dict(data, title=title) if data is not None else None
-    html = w.PREVIEW_PAGE.replace("<div id=\"bar\">", STUB % json.dumps(data) + "<div id=\"bar\">", 1)
+    html = w.PREVIEW_PAGE
+    if tab:     # what WavePreviewTab.get_ui() adds
+        html = html.replace('<div id="bar">', '<script>window.__WAVE_TAB__ = true;</script>\n<div id="bar">', 1)
+    html = html.replace("<div id=\"bar\">", STUB % json.dumps(data) + "<div id=\"bar\">", 1)
     path = os.path.join(out_dir, "page.html")
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -115,6 +118,15 @@ def main():
     empty = chrome(build_html(None, "", out_dir), "", ["--dump-dom", "--virtual-time-budget=4000"]).stdout
     check("No waves to show yet" in empty and 'id="status" class="bad"' not in empty,
           "with no data the page says there are no waves yet")
+    import re
+
+    def side_button(tab):
+        dom_ = chrome(build_html(data, title, out_dir, tab=tab), "", ["--dump-dom", "--virtual-time-budget=4000"]).stdout
+        m = re.search(r'<button[^>]*id="side"[^>]*>', dom_)
+        return m.group(0) if m else None
+    tag_tab, tag_side = side_button(True), side_button(False)
+    check(tag_tab and "hidden" not in tag_tab, "the tab's page shows the Open side panel button")
+    check(tag_side and "hidden" in tag_side, "the side panel's page does not")
     path = build_html(data, title, out_dir)
     dom = chrome(path, "", ["--dump-dom", "--virtual-time-budget=4000"]).stdout
     check('id="status" class="bad"' not in dom, "page loads without a script error")
