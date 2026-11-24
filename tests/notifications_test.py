@@ -19,6 +19,7 @@ import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gcode_instances_test as gi  # noqa: E402  (stubs orca, loads the plugin, builds G-code)
+import preview_slice_test as ps  # noqa: E402  (synthetic captures with instance positions and outlines)
 
 w = gi.w
 orca = w.orca
@@ -148,7 +149,7 @@ def main():
     w._note("Wave Overhangs, part2: waves on 3 layer(s), about 4 min", "slice")
     cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
     check(len(shown) == 1 and shown[0][0] == "Important" and "part2" in shown[0][1]
-          and "offers Show waves" in shown[0][1], "slice result shown once, with the export hint")
+          and "Show waves previews them now" in shown[0][1], "slice result shown once, with the preview hint")
     shown.clear()
     cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
     check(not shown, "nothing shown twice")
@@ -221,6 +222,41 @@ def main():
     w._note("Wave Overhangs: waves added to the exported G-code, under a minute of printing.", "info")
     cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
     check(shown and links[-1][0] == "", "and the notification has no link")
+
+    # the preview before any export, from the slice
+    w._STATE.clear()
+    w._STATE.update(ps.synthetic_captures())
+    w._PREVIEW = None
+    w._SLICE_DIRTY = True
+    w._take_notes()
+    shown.clear(); links.clear(); panels.clear()
+    cap = capability({})
+    w._note("Wave Overhangs, part: waves on 1 layer(s), under a minute", "slice")
+    cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
+    check(len(shown) == 1 and links[-1][0] == "Show waves" and w._PREVIEW["source"] == "slice"
+          and not w._SLICE_DIRTY and not panels, "right after slicing, before any export, the link is offered")
+    links[-1][1]()
+    cap.panel.kw["on_message"]({"command": "preview_ready"})
+    msg = panels[0].posted[-1]
+    check(msg["title"] == "from the slice, before export" and abs(msg["stats"]["wave_mm"] - 26.0) < 0.1
+          and any(l["c"] for l in msg["layers"]), "the panel shows the waves and outlines from the slice")
+    cap._store_preview(gctx, {"preview": 1}, exported, True, True)
+    check(w._PREVIEW["source"] == "gcode" and not w._SLICE_DIRTY, "the export replaces the slice preview")
+    w._note("Wave Overhangs: waves added to the exported G-code, under a minute of printing.", "info")
+    cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
+    check(len(panels) == 1 and panels[0].posted[-1]["title"] == "plate.gcode" and links[-1][0] == "Show waves",
+          "the open panel is refreshed with the exported data, and the link is offered again")
+    w._PREVIEW = None
+    w._SLICE_DIRTY = True
+    shown.clear(); links.clear()
+    w._note("a slice note", "slice")
+    capability({"preview": 0}).on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
+    check(w._PREVIEW is None and links[-1][0] == "" and not w._SLICE_DIRTY, "preview = 0: nothing is built, no link")
+    w._SLICE_DIRTY = True
+    w._STATE.clear()
+    w._note("a slice note", "slice")
+    capability({}).on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
+    check(w._PREVIEW is None and not w._SLICE_DIRTY, "no captured waves: no preview")
 
     # log
     with open(LOG, encoding="utf-8") as f:

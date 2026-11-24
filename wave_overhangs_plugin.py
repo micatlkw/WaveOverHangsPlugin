@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.7.3"
+# version = "0.8.0"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhangs -- slicing-pipeline plugin.
@@ -131,6 +131,7 @@ _STATE = {}
 # "title", "fresh"}. "fresh" is true until the next notification has offered it. Module global and
 # capability instance, like the captures.
 _PREVIEW = None
+_SLICE_DIRTY = False     # a slice added captures that no preview has been built from yet
 _SEEN_EVENTS = set()     # lifecycle events already traced in the log (the first of each, and every SlicingJobComplete)
 
 # Results shown as an OrcaSlicer notification when the slicing job completes. execute() runs on
@@ -1220,6 +1221,45 @@ def island_waves(island, island_polys, lower_raw, lower, P, keep, height, ext_w,
     return regions, cut, walls
 
 
+def _ring_flat(ring, k, tol_mm=0.02):
+    """A closed ring of scaled points as a flat mm list [x0, y0, ...], simplified, closed."""
+    pts = [(x * k, y * k) for x, y in ring]
+    if len(pts) < 3:
+        return []
+    pts.append(pts[0])
+    pts = douglas_peucker(pts, tol_mm)
+    return [round(v, 2) for point in pts for v in point] if len(pts) >= 3 else []
+
+
+def _object_instances(ctx):
+    """Plate positions (centre of the world bounding box, mm) of the instances this PrintObject
+    prints. OrcaSlicer centres each object before slicing and adds instance.shift (the instance's
+    position plus the centre offset) to every point of the G-code (PrintObject.cpp, Print.cpp), so
+    slice coordinates + this centre = G-code coordinates, up to the plate origin of a later plate.
+    The PrintObject's own transform tells which instances share this object's geometry."""
+    out = []
+    try:
+        every = list(ctx.object.model_object().instances())
+        printable = [i for i in every if getattr(i, "printable", True)]
+        matched = []
+        try:
+            T = np.asarray(ctx.object.trafo())
+            for inst in printable:
+                M = np.asarray(inst.matrix())
+                if np.allclose(M[:3, :3], T[:3, :3], atol=1e-5) and abs(M[2, 3] - T[2, 3]) < 1e-5:
+                    matched.append(inst)
+        except Exception:
+            pass
+        for inst in (matched or printable):
+            bb = inst.bounding_box()
+            if getattr(bb, "defined", True):
+                lo, hi = bb.min, bb.max
+                out.append(((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0))
+    except Exception:
+        pass
+    return out
+
+
 def _generate_object(ctx, p, waves=True):
     """Waves and cut zones for every layer of ctx.object, from the slices as they are now.
     With waves=False only the layers are recorded (an object left alone).
@@ -1247,7 +1287,7 @@ def _generate_object(ctx, p, waves=True):
         islands = [_expoly_from_host(ex) for ex in layer.lslices()]
         islands_of[idx] = islands
         entry = {"z": float(layer.print_z), "height": float(layer.height), "ref": None, "paths": [],
-                 "walls": []}
+                 "walls": [], "ctx": [flat for flat in (_ring_flat(r, k) for r in to_polygons(islands)) if flat]}
         layers[_zkey(layer.print_z)] = entry
         if idx == 0 or not islands or not waves:
             continue
@@ -1304,6 +1344,7 @@ def _generate_object(ctx, p, waves=True):
         "layers": layers,
         "stats": stats,
         "line_width": G["nozzle_mm"],
+        "instances": _object_instances(ctx),
         "instance_offset": instance_offset,
         "cut_layers": 0,
         "generated_at": "posSlice",
@@ -2125,6 +2166,40 @@ PREVIEW_PAGE = r"""
 """
 
 
+def build_slice_preview(captures):
+    """The same data as extract_preview(), from what was captured while slicing, so the panel can
+    show the waves before the export. Slice coordinates are moved to plate coordinates by each
+    instance's centre; the layer outlines stand in for the slicer's outer walls."""
+    merged = {}
+    stats = {"wave_mm": 0.0, "wall_mm": 0.0, "numbers": 0}
+    lo = [1e18, 1e18]
+    hi = [-1e18, -1e18]
+
+    def put(layer, kind, flat):
+        layer[kind].append(flat)
+        stats["numbers"] += len(flat)
+        for x, y in zip(flat[0::2], flat[1::2]):
+            lo[0], lo[1] = min(lo[0], x), min(lo[1], y)
+            hi[0], hi[1] = max(hi[0], x), max(hi[1], y)
+
+    for cap in captures.values():
+        for cx, cy in cap.get("instances") or []:
+            for zk, entry in cap["layers"].items():
+                layer = merged.setdefault(zk, {"z": entry["z"], "w": [], "k": [], "c": []})
+                for path in entry["paths"]:
+                    stats["wave_mm"] += polyline_length(path)
+                    put(layer, "w", [round(v + (cx if i % 2 == 0 else cy), 2)
+                                     for point in path for i, v in enumerate(point)])
+                for wall in entry.get("walls", []):
+                    stats["wall_mm"] += polyline_length(wall["pts"])
+                    put(layer, "k", [round(v + (cx if i % 2 == 0 else cy), 2)
+                                     for point in wall["pts"] for i, v in enumerate(point)])
+                for flat in entry.get("ctx", []):
+                    put(layer, "c", [round(v + (cx if i % 2 == 0 else cy), 2) for i, v in enumerate(flat)])
+    layers = [merged[zk] for zk in sorted(merged)]
+    return {"layers": layers, "bbox": [lo[0], lo[1], hi[0], hi[1]] if stats["numbers"] else None, "stats": stats}
+
+
 def extract_preview(lines, e_relative, tol_mm=0.02):
     """Per-layer toolpaths of the final G-code for the preview panel.
 
@@ -2310,13 +2385,15 @@ def _inject_all(lines, captures, cfg, report, notes):
                 continue
             plan.append((gl["end"], cl, cal, gl["end_state"], cap["line_width"]))
             waves += 1
+        guess = [math.hypot(cal["dx"] - cx, cal["dy"] - cy) for cx, cy in cap.get("instances") or []]
         report.append("%s: %s%s, offset X %s Y %s mm (deviation from it: 90th percentile %s mm, worst layer "
                       "%s mm; size mismatch %s mm; %d of %d layers compared), waves on %d layer(s)%s"
                       % (name, _object_name(cap, oid),
                          " (1 of %d identical matches)" % candidates if candidates > 1 else "",
                          _fmt(cal["dx"]), _fmt(cal["dy"]), _fmt(cal["spread_p90"]), _fmt(cal["spread_max"]),
                          _fmt(cal["size_mismatch"]), cal["samples"], len(layers), waves,
-                         " (%d top layer(s) skipped)" % no_end if no_end else ""))
+                         (" (%d top layer(s) skipped)" % no_end if no_end else "")
+                         + ("; slice-time position guess off by %s mm" % _fmt(min(guess)) if guess else "")))
     for oid, cap in captures.items():
         if oid not in used and cap["stats"]["wave_layers"]:
             report.append("%s: has waves but was not placed (%s)"
@@ -2342,7 +2419,7 @@ def _inject_all(lines, captures, cfg, report, notes):
                       % _minutes_text(minutes), "info"))
 
 
-_VERSION = "0.7.3"
+_VERSION = "0.8.0"
 
 
 # ============================================================================
@@ -2437,6 +2514,8 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
         if skip:
             return orca.ExecutionResult.success("Wave Overhangs: %s left alone (%s)" % (name, skip))
         if st["wave_layers"]:
+            global _SLICE_DIRTY
+            _SLICE_DIRTY = True
             text = ("Wave Overhangs, %s: waves on %d layer(s), %s"
                     % (name, st["wave_layers"],
                        _minutes_text(st["length_mm"] / max(p["print_speed_mm_s"], 0.1) / 60.0)))
@@ -2514,16 +2593,17 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
 
     def _store_preview(self, ctx, p, lines, changed, e_relative):
         """Keep the data for the preview panel from this export (worker thread: no UI here)."""
-        global _PREVIEW
+        global _PREVIEW, _SLICE_DIRTY
         data = None
         if not changed and any(l.startswith(_TAG) for l in lines[:200]):
             return      # the file already had its waves (an export of the same file): keep what we have
+        _SLICE_DIRTY = False
         if p["preview"] != 0 and changed:
             started = time.time()
             try:
                 pv = extract_preview(lines, e_relative)
                 if pv["stats"]["wave_mm"] > 0:
-                    data = {"data": pv, "fresh": True,
+                    data = {"data": pv, "fresh": True, "source": "gcode",
                             "title": os.path.basename(str(ctx.output_name or ctx.gcode_path))}
                     _write_log({"event": "preview_data", "numbers": pv["stats"]["numbers"],
                                 "layers": len(pv["layers"]), "seconds": round(time.time() - started, 2)})
@@ -2531,6 +2611,29 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
                 _write_log({"event": "preview_data", "error": "%s: %s" % (type(e).__name__, e)})
         _PREVIEW = data
         self._preview_state = data
+
+    def _build_slice_preview(self):
+        """Right after slicing (UI thread): preview the waves from what the slice captured, before
+        any export. An export replaces it with the exact data from the file."""
+        global _PREVIEW, _SLICE_DIRTY
+        if not _SLICE_DIRTY:
+            return
+        _SLICE_DIRTY = False
+        if _params(self)["preview"] == 0:
+            return
+        started = time.time()
+        try:
+            captures = _STATE or getattr(self, "_wave_state", None) or {}
+            pv = build_slice_preview(captures)
+            if pv["stats"]["wave_mm"] <= 0:
+                return
+            data = {"data": pv, "fresh": True, "source": "slice", "title": "from the slice, before export"}
+            _PREVIEW = data
+            self._preview_state = data
+            _write_log({"event": "preview_data", "source": "slice", "numbers": pv["stats"]["numbers"],
+                        "layers": len(pv["layers"]), "seconds": round(time.time() - started, 2)})
+        except Exception as e:
+            _write_log({"event": "preview_data", "source": "slice", "error": "%s: %s" % (type(e).__name__, e)})
 
     def _preview(self):
         return _PREVIEW or getattr(self, "_preview_state", None)
@@ -2588,6 +2691,8 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
             completed = code is None or getattr(ctx, "code", None) == code.Ok
             if not completed:
                 notes = [n for n in notes if n[1] == "warning"] if ctx.code == code.Error else []
+            if completed:
+                self._build_slice_preview()
             pv = self._preview() if completed else None
             fresh = pv is not None and pv.get("fresh")
             if fresh:
@@ -2600,9 +2705,9 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
                 return
             if any(level == "slice" for _, level in notes) and not any("exported G-code" in t for t, _ in notes):
                 if self._preview_enabled:
-                    notes.append(("The waves are added when you export the G-code. After exporting, a notification "
-                                  "offers Show waves; OrcaSlicer's own preview never shows them (except on Bambu "
-                                  "printers).", "info"))
+                    notes.append(("Show waves previews them now. They are added to the G-code when you export it, "
+                                  "and OrcaSlicer's own preview never shows them (except on Bambu printers).",
+                                  "info"))
                 else:
                     notes.append(("The waves are added to the G-code when it is exported; except on Bambu printers "
                                   "the preview doesn't show them.", "info"))

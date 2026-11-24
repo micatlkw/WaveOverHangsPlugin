@@ -27,15 +27,21 @@ exported file in a second OrcaSlicer.
 
 ### The wave preview panel
 
-After an export that added waves, the notification has a **Show waves** link. It opens a panel
-beside the 3D view that draws the exported G-code:
+When slicing finishes, the notification has a **Show waves** link, and it has one again after an
+export. It opens a panel beside the 3D view:
+
+- **Right after slicing,** the panel draws the waves and kept walls the plugin worked out, with
+  the outline of every layer in grey. It places each object by the centre of its bounding box on
+  the plate, which is where OrcaSlicer puts it in the G-code.
+- **After an export,** the panel is refreshed from the exported file itself, so it shows exactly
+  what will be printed. The export's report notes how far the slice-time positions were off.
 
 - **3D view:** drag to orbit, right-drag or Shift-drag to pan, mouse wheel to zoom, double-click
   (or **Fit**) to fit the waves. **Layer** looks straight down at one layer.
 - **Sliders:** *top layer* and *from layer* choose the layers shown; **◀ waves / waves ▶** jump to
   the previous or next layer that has waves; the Up and Down arrow keys step one layer.
-- **Colours:** waves teal, kept walls orange, the slicer's own outer walls grey; each can be
-  switched off. The panel also shows the length of waves and wall in the layers shown.
+- **Colours:** waves teal, kept walls orange, the slicer's outer walls (the layer outlines before
+  the export) grey; each can be switched off. The panel also shows the length of waves and wall in the layers shown.
 
 It draws lines only, and only the outer walls of the rest of the print, so it is for checking
 where the waves and walls go, not a replacement for the slicer's preview. Exporting again
@@ -87,7 +93,7 @@ preset. Distances are in mm.
 | `min_length_mm` | `0` | Skip overhangs whose outline is shorter than this. |
 | `outer_walls` | `1` | Normal walls kept along the edge of wide overhangs, so their side looks like the rest of the object. They are printed right after the waves, innermost first, and the waves fill the area inside them. Chosen automatically per overhang: a wall is kept only where the overhang reaches past it plus two wave lines (about 1.1 mm per layer with the defaults, roughly 80° from vertical at 0.2 mm layers), so the waves inside can carry it. Steeper, narrower overhangs are waved right to the edge, and where one joins a wide overhang only the wide part gets a wall. `0` never keeps a wall. At most the process's wall count. |
 | `apply_to` | `unsupported` | `unsupported`: objects with Orca's **Enable support** on are left alone. `all`: wave every object. |
-| `preview` | `1` | `1` offers the **Show waves** panel after an export (see [The wave preview panel](#the-wave-preview-panel)). `0` turns it off. |
+| `preview` | `1` | `1` offers the **Show waves** panel after slicing and after an export (see [The wave preview panel](#the-wave-preview-panel)). `0` turns it off. |
 | `enabled` | `1` | `0` only measures and writes the report. Nothing is cut and no waves are added. |
 
 ### Wave shape

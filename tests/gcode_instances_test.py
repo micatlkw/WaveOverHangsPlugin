@@ -83,7 +83,10 @@ def build(family, instances):
             g += ["M486 S%d" % UNIQUE[(oid, copy)], "M486 A%s" % OBJECTS[oid]["name"], "M486 S-1"]
     pending_end = []
     for z in ZS:
-        g += [";LAYER_CHANGE", ";Z:%s" % w._fmt(z), ";HEIGHT:0.2", "G1 E-0.8 F1800", "G1 Z%s" % w._fmt(z)]
+        # the previous layer's last instance already retracted (a second retract would leave the
+        # first segment of the layer net-retracted)
+        g += [";LAYER_CHANGE", ";Z:%s" % w._fmt(z), ";HEIGHT:0.2"] + (["G1 E-0.8 F1800"] if z == ZS[0] else []) \
+             + ["G1 Z%s" % w._fmt(z)]
         g += pending_end  # lazy end label of the previous layer's last instance
         pending_end = []
         for n, (oid, copy, (cx, cy)) in enumerate(instances):

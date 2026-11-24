@@ -200,7 +200,20 @@ Wave Overhangs from Slicing Pipeline Plugin, slice, add it back, slice, export).
 improvement: persist the captures on disk so a reloaded plugin can still inject into a cached slice
 (needs a staleness check).
 
-## 15. Next
+## 15. Preview before the export — done in code, not yet run in OrcaSlicer
 
-Check v0.7.0 in OrcaSlicer, fix what the mouse/slider use turns up, then push and tag v0.7.0.
-Also: add the "second window" sentence to the preview proposal; README note for macOS.
+v0.8.0: the "Show waves" link now comes right after slicing, with the panel drawn from what the
+slice captured (waves, kept walls, layer outlines placed by each instance's bounding-box centre);
+the export refreshes it with the exact data from the file and logs the position error in the report
+("slice-time position guess off by X mm"). `tests/preview_slice_test.py`: on the synthetic plate the
+slice-time route and the exported G-code give identical waves, kept walls and outlines.
+
+To check in OrcaSlicer (after reinstalling: remove Wave Overhangs from Slicing Pipeline Plugin, slice,
+add it back, slice): the notification after slicing should have "Show waves"; the panel should show
+the plate with waves; export, then the panel refreshes, and the exported file's report lines should say
+the position guess was off by ~0 mm for every copy. If the numbers are not ~0, send the report lines.
+
+## 16. Next
+
+Check v0.8.0 in OrcaSlicer, fix what the mouse/slider use and the position check turn up, push and tag
+v0.8.0. Also: add the "second window" sentence to the preview proposal; README note for macOS.

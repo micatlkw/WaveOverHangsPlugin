@@ -18,7 +18,7 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 
 Current state:
 
-- `wave_overhangs_plugin.py` — the plugin (v0.7.0: several objects and copies per plate;
+- `wave_overhangs_plugin.py` — the plugin (v0.8.0: several objects and copies per plate;
   gentle slopes keep the slicer's walls, `min_overhang_mm` = 0.5; one wall kept along the
   edge of wide overhangs, `outer_walls` = 1). Ports the fork's generator with pyclipper
   and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
@@ -193,7 +193,7 @@ User feedback (v0.6.0, borrowed from the Support Fins plugin in `../support-fins
 - **Log**: `_write_log()` appends JSON lines to `wave_overhangs_log.jsonl` next to the plugin
   file (slice: object, stats, settings, time; G-code: report lines). Best effort.
 
-Preview panel (v0.7.0; the plugin's workaround for OrcaSlicer's preview not showing G-code edits on
+Preview panel (v0.7.0, before-export in v0.8.0; the plugin's workaround for OrcaSlicer's preview not showing G-code edits on
 non-Bambu printers, see `docs/upstream-proposal-preview-postprocess.md`):
 
 - **Data**: `extract_preview(lines, e_relative)` runs at the end of `_inject()` (worker thread, ~0.3 s)
@@ -203,6 +203,17 @@ non-Bambu printers, see `docs/upstream-proposal-preview-postprocess.md`):
   A file that already has its waves keeps the old data; an export without waves, or `preview` = 0,
   drops it. 20-46 thousand numbers (0.3 MB) per plate, sent in one message (the probe showed 2 million
   numbers arrive intact in 0.7 s).
+- **Before the export (v0.8.0)**: the waves and kept walls exist after posSlice, so
+  `build_slice_preview(captures)` (UI thread, when SlicingJobComplete fires with `_SLICE_DIRTY` set by
+  `_slice`) builds the same data from the captures. Each capture keeps `instances` (plate centres) and
+  per-layer `ctx` outlines (the uncut layer islands, simplified 0.02 mm, ~4 ms per ring). Plate position of an
+  instance = centre of `ModelInstance.bounding_box()`: OrcaSlicer centres each object before slicing
+  (`PrintObject.cpp:159`) and G-code = slice + `shift` (instance position + centre offset, `PrintObject.cpp:179`,
+  `PrintApply.cpp:211`); for a later plate the G-code is relative to the plate origin, which plugins cannot
+  read, so only absolute positions differ there. `_object_instances()` picks the model instances whose
+  matrix equals `PrintObject.trafo()` (translation aside), as one model object can make several PrintObjects.
+  The export replaces the data (source "gcode") and refreshes an open panel; the export's report line says
+  how far the slice-time guess was ("slice-time position guess off by X mm").
 - **Panel**: no UI calls from `execute()`. `on_lifecycle_event(SlicingJobComplete)` (UI thread) pushes
   the notification with the hyper text "Show waves" when the data is `fresh`, and refreshes an open
   panel; the link callback (`show_preview()`) opens `PREVIEW_PAGE` with
