@@ -28,7 +28,9 @@ exported file in a second OrcaSlicer.
 ### The wave preview panel
 
 When slicing finishes, the notification has a **Show waves** link, and it has one again after an
-export. It opens a panel beside the 3D view:
+export. It opens a panel beside the 3D view. The notification fades after a few seconds; to open the
+panel again later, or after closing it, open the **Plugins** dialog and run **Show Wave Preview**.
+It shows the latest slice or export. The panel itself:
 
 - **Right after slicing,** the panel draws the waves and kept walls the plugin worked out, with
   the outline of every layer in grey. It places each object by the centre of its bounding box on

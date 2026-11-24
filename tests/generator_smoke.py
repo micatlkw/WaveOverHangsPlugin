@@ -23,6 +23,7 @@ sl.unscale = lambda v: v * 1e-6
 orca.slicing = sl
 orca.ExecutionResult = object
 orca.base = object
+orca.script = types.SimpleNamespace(ScriptPluginCapabilityBase=object)
 orca.plugin = lambda c: c
 orca.register_capability = lambda *a: None
 sys.modules["orca"] = orca

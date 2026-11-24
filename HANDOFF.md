@@ -213,7 +213,21 @@ add it back, slice): the notification after slicing should have "Show waves"; th
 the plate with waves; export, then the panel refreshes, and the exported file's report lines should say
 the position guess was off by ~0 mm for every copy. If the numbers are not ~0, send the report lines.
 
-## 16. Next
+## 16. Notification and reopening (user feedback on 0.8.0) — done in code, not yet run
 
-Check v0.8.0 in OrcaSlicer, fix what the mouse/slider use and the position check turn up, push and tag
-v0.8.0. Also: add the "second window" sentence to the preview proposal; README note for macOS.
+0.8.0 works in OrcaSlicer (user confirmed). Feedback: (1) the "Show waves" link was only visible after
+expanding the notification; (2) once the panel was closed there was no way to open it again. 0.8.1: one
+short notification line (OrcaSlicer collapses past two lines and puts the link inline), and a Plugins
+dialog action "Show Wave Preview" (a second, script capability in the same file) that reopens the panel
+with the latest data. To check: reinstall, slice (the link must be visible without expanding), close the
+panel, then Plugins > Show Wave Preview. Open question: whether the Plugins dialog lists the action next
+to the pipeline capability.
+
+Bigger idea, not built: a plugin *page* (`PagesPluginCapability`, `get_ui()`) is a permanent tab next to
+Prepare/Preview in the main window (`PluginPages` in MainFrame), so the preview could live in a tab that can
+not be closed and gets the whole window. Same HTML; messages go through `on_message`/`post_message`.
+
+## 17. Next
+
+Check 0.8.1 in OrcaSlicer, then push and tag v0.8.1 (v0.8.0 and v0.7.x are not tagged). Also: add the
+"second window" sentence to the preview proposal; README note for macOS.

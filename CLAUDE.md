@@ -18,7 +18,7 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 
 Current state:
 
-- `wave_overhangs_plugin.py` — the plugin (v0.8.0: several objects and copies per plate;
+- `wave_overhangs_plugin.py` — the plugin (v0.8.1: several objects and copies per plate;
   gentle slopes keep the slicer's walls, `min_overhang_mm` = 0.5; one wall kept along the
   edge of wide overhangs, `outer_walls` = 1). Ports the fork's generator with pyclipper
   and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
@@ -214,6 +214,15 @@ non-Bambu printers, see `docs/upstream-proposal-preview-postprocess.md`):
   matrix equals `PrintObject.trafo()` (translation aside), as one model object can make several PrintObjects.
   The export replaces the data (source "gcode") and refreshes an open panel; the export's report line says
   how far the slice-time guess was ("slice-time position guess off by X mm").
+- **Notification layout (v0.8.1)**: OrcaSlicer collapses a notification to two lines (`m_lines_count > 2`
+  shows "More") and draws the hyperlink inline after the last text line (adding a line if it does not fit),
+  so a three-line text hid "Show waves" until expanded. The slice notification is now one short summary
+  (`_slice_summary()`: "Wave Overhangs: 18 wave layers, about 45 min."), the export one "waves added, about
+  N min."; per-object details are in the log. Keep text + link under ~60 characters.
+- **Reopening (v0.8.1)**: the panel state is module-level (`_PANEL`, `show_preview()`), and a second capability,
+  `ShowWavePreview` (a script capability: Plugins dialog > Show Wave Preview), opens/refreshes it from the latest
+  data at any time, with a message box when there is nothing yet. The header `type` is display-only, so one
+  file can hold a pipeline and a script capability.
 - **Panel**: no UI calls from `execute()`. `on_lifecycle_event(SlicingJobComplete)` (UI thread) pushes
   the notification with the hyper text "Show waves" when the data is `fresh`, and refreshes an open
   panel; the link callback (`show_preview()`) opens `PREVIEW_PAGE` with

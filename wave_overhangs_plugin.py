@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.8.0"
+# version = "0.8.1"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhangs -- slicing-pipeline plugin.
@@ -2415,16 +2415,64 @@ def _inject_all(lines, captures, cfg, report, notes):
                   % (len(plan), _fmt(totals["length_mm"]), _fmt(totals["wall_mm"]), _fmt(cfg.get("wall_speed", 0)),
                      _fmt(totals["filament_mm"]), _fmt(minutes)))
     if plan:
-        notes.append(("Wave Overhangs: waves added to the exported G-code, %s of printing."
-                      % _minutes_text(minutes), "info"))
+        notes.append(("Wave Overhangs: waves added, %s." % _minutes_text(minutes), "info"))
 
 
-_VERSION = "0.8.0"
+_VERSION = "0.8.1"
 
 
 # ============================================================================
 # the capability
 # ============================================================================
+
+_PANEL = None        # the open preview panel (UI thread only)
+
+
+def _preview_payload():
+    pv = _PREVIEW
+    return None if pv is None else dict(pv["data"], command="preview", title=pv["title"])
+
+
+def show_preview():
+    """Open the preview panel, or bring the open one forward and send it the latest data.
+    UI thread: the notification link, the lifecycle event, the Show Wave Preview action."""
+    global _PANEL
+    payload = _preview_payload()
+    if payload is None:
+        return "no preview data"
+    if _PANEL is not None and _PANEL.is_open():
+        _PANEL.show()
+        _PANEL.post(payload)
+        return "preview panel refreshed"
+    _PANEL = orca.host.ui.create_dock_panel(
+        html=PREVIEW_PAGE, title="Wave preview", width=480, height=640,
+        on_message=_panel_message, on_close=_panel_closed, dock="right")
+    return "preview panel opened"
+
+
+def _panel_message(message):
+    if (message or {}).get("command") == "preview_ready":
+        payload = _preview_payload()
+        if payload is not None and _PANEL is not None:
+            _PANEL.post(payload)
+
+
+def _panel_closed():
+    global _PANEL
+    _PANEL = None
+
+
+def _slice_summary(captures, print_speed):
+    """One short line for the slice notification: how many layers get waves and for how long."""
+    layers = {zk for cap in captures.values() if not cap.get("skipped")
+              for zk, entry in cap["layers"].items() if entry["paths"]}
+    seconds = sum(cap["stats"]["length_mm"] * max(1, len(cap.get("instances") or [None]))
+                  for cap in captures.values() if not cap.get("skipped")) / max(print_speed, 0.1)
+    if not layers:
+        return None
+    return "Wave Overhangs: %d wave layer%s, %s." % (
+        len(layers), "" if len(layers) == 1 else "s", _minutes_text(seconds / 60.0))
+
 
 class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
     def get_name(self):
@@ -2589,8 +2637,6 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
         return orca.ExecutionResult.success("Wave Overhangs: " + summary)
 
     # --- preview panel -------------------------------------------------------------------------
-    panel = None
-
     def _store_preview(self, ctx, p, lines, changed, e_relative):
         """Keep the data for the preview panel from this export (worker thread: no UI here)."""
         global _PREVIEW, _SLICE_DIRTY
@@ -2627,7 +2673,8 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
             pv = build_slice_preview(captures)
             if pv["stats"]["wave_mm"] <= 0:
                 return
-            data = {"data": pv, "fresh": True, "source": "slice", "title": "from the slice, before export"}
+            data = {"data": pv, "fresh": True, "source": "slice",
+                    "title": "from the slice; the waves go into the G-code when you export"}
             _PREVIEW = data
             self._preview_state = data
             _write_log({"event": "preview_data", "source": "slice", "numbers": pv["stats"]["numbers"],
@@ -2638,37 +2685,16 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
     def _preview(self):
         return _PREVIEW or getattr(self, "_preview_state", None)
 
-    def _preview_payload(self):
-        pv = self._preview()
-        return None if pv is None else dict(pv["data"], command="preview", title=pv["title"])
+    @property
+    def panel(self):
+        return _PANEL
 
     def show_preview(self):
-        """Open the preview panel, or bring the open one to the front and send it the latest data.
-        UI thread (the notification link, the lifecycle event)."""
-        payload = self._preview_payload()
-        if payload is None:
-            return "no preview data"
-        if self.panel is not None and self.panel.is_open():
-            self.panel.show()
-            self.panel.post(payload)
-            return "preview panel refreshed"
-        self.panel = orca.host.ui.create_dock_panel(
-            html=PREVIEW_PAGE, title="Wave preview", width=480, height=640,
-            on_message=self._panel_message, on_close=self._panel_closed, dock="right")
-        return "preview panel opened"
-
-    def _panel_message(self, message):
-        if (message or {}).get("command") == "preview_ready":
-            payload = self._preview_payload()
-            if payload is not None and self.panel is not None:
-                self.panel.post(payload)
-
-    def _panel_closed(self):
-        self.panel = None
+        return show_preview()
 
     def _link_clicked(self):
         try:
-            _write_log({"event": "show_waves", "result": self.show_preview()})
+            _write_log({"event": "show_waves", "result": show_preview()})
         except Exception as e:
             _write_log({"event": "show_waves", "error": "%s: %s" % (type(e).__name__, e)})
         return True
@@ -2701,16 +2727,16 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
                     self.show_preview()
             _write_log({"event": "slicing_complete", "completed": completed, "notes": len(notes),
                         "fresh": bool(fresh), "texts": [t for t, _ in notes][:4]})
+            if any(level == "slice" for _, level in notes):
+                # one short line, so the link shows without expanding the notification (OrcaSlicer
+                # collapses a notification to two lines and puts the link at the end of the text)
+                captures = _STATE or getattr(self, "_wave_state", None) or {}
+                summary = _slice_summary(captures, _params(self)["print_speed_mm_s"])
+                first = next(t for t, level in notes if level == "slice")
+                notes = [n for n in notes if n[1] != "slice"]
+                notes.insert(0, (summary or first, "info"))
             if not notes:
                 return
-            if any(level == "slice" for _, level in notes) and not any("exported G-code" in t for t, _ in notes):
-                if self._preview_enabled:
-                    notes.append(("Show waves previews them now. They are added to the G-code when you export it, "
-                                  "and OrcaSlicer's own preview never shows them (except on Bambu printers).",
-                                  "info"))
-                else:
-                    notes.append(("The waves are added to the G-code when it is exported; except on Bambu printers "
-                                  "the preview doesn't show them.", "info"))
             ui = orca.host.ui
             level = getattr(ui.NotificationLevel, notification_level(notes))
             if fresh:
@@ -2722,7 +2748,31 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
             _write_log({"event": "notification", "error": "%s: %s" % (type(e).__name__, e)})
 
 
+class ShowWavePreview(orca.script.ScriptPluginCapabilityBase):
+    """Plugins dialog > Show Wave Preview: opens the preview panel again with the latest data
+    (the notification's link fades after a few seconds, and the panel can be closed)."""
+
+    def get_name(self):
+        return "Show Wave Preview"
+
+    def execute(self):
+        try:
+            result = show_preview()
+        except Exception as e:
+            _write_log({"event": "show_action", "error": "%s: %s" % (type(e).__name__, e)})
+            return orca.ExecutionResult.success("Wave Overhangs: could not open the preview: %s" % e)
+        if result == "no preview data":
+            try:
+                orca.host.ui.message("There is no wave preview yet. Select Wave Overhangs as the Slicing Pipeline "
+                                     "Plugin, slice a plate that has overhangs, then run this again.",
+                                     "Wave Overhangs")
+            except Exception:
+                pass
+        return orca.ExecutionResult.success("Wave Overhangs: " + result)
+
+
 @orca.plugin
 class WaveOverhangsPackage(orca.base):
     def register_capabilities(self):
         orca.register_capability(WaveOverhangs)
+        orca.register_capability(ShowWavePreview)

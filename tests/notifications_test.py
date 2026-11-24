@@ -51,6 +51,9 @@ def create_dock_panel(**kw):
     return panels[-1]
 
 
+messages = []
+
+
 def push_notification(level, text, hyper="", on_click=None):
     shown.append((level, text))
     links.append((hyper, on_click))
@@ -59,7 +62,8 @@ def push_notification(level, text, hyper="", on_click=None):
 orca.host = types.SimpleNamespace(ui=types.SimpleNamespace(
     NotificationLevel=types.SimpleNamespace(ImportantNotificationLevel="Important",
                                             WarningNotificationLevel="Warning"),
-    push_notification=push_notification, create_dock_panel=create_dock_panel))
+    push_notification=push_notification, create_dock_panel=create_dock_panel,
+    message=lambda text, title="": messages.append((title, text))))
 orca.slicing.Step = types.SimpleNamespace(posSlice="posSlice", posPerimeters="posPerimeters",
                                           psGCodePostProcess="psGCodePostProcess")
 orca.ExecutionResult = types.SimpleNamespace(success=lambda msg="": ("ok", msg))
@@ -132,7 +136,7 @@ def main():
     # notes from the G-code step
     notes = []
     w._post_process(gi.build("klipper", gi.INSTANCES), gi.captures(), (True, True), dict(gi.CFG), notes)
-    check(len(notes) == 1 and notes[0][1] == "info" and "of printing" in notes[0][0], "summary note: %s" % notes)
+    check(len(notes) == 1 and notes[0][1] == "info" and "waves added" in notes[0][0], "summary note: %s" % notes)
     notes = []
     w._post_process(gi.build(None, gi.INSTANCES), gi.captures(), (True, True), dict(gi.CFG), notes)
     check(any(level == "warning" and "Exclude objects" in text for text, level in notes),
@@ -149,7 +153,7 @@ def main():
     w._note("Wave Overhangs, part2: waves on 3 layer(s), about 4 min", "slice")
     cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
     check(len(shown) == 1 and shown[0][0] == "Important" and "part2" in shown[0][1]
-          and "Show waves previews them now" in shown[0][1], "slice result shown once, with the preview hint")
+          and "\n" not in shown[0][1], "slice result shown once, as a single line")
     shown.clear()
     cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
     check(not shown, "nothing shown twice")
@@ -178,6 +182,7 @@ def main():
     gctx = types.SimpleNamespace(output_name="/x/plate.gcode", gcode_path="/tmp/y.pp")
     w._take_notes()
     shown.clear(); links.clear(); panels.clear()
+    w._PANEL = None
     cap = capability({})
     cap._store_preview(gctx, {"preview": 1}, exported, True, True)
     pv = w._PREVIEW
@@ -230,15 +235,18 @@ def main():
     w._SLICE_DIRTY = True
     w._take_notes()
     shown.clear(); links.clear(); panels.clear()
+    w._PANEL = None
     cap = capability({})
     w._note("Wave Overhangs, part: waves on 1 layer(s), under a minute", "slice")
     cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
     check(len(shown) == 1 and links[-1][0] == "Show waves" and w._PREVIEW["source"] == "slice"
           and not w._SLICE_DIRTY and not panels, "right after slicing, before any export, the link is offered")
+    check("\n" not in shown[0][1] and len(shown[0][1]) + len("Show waves") + 1 <= 60,
+          "the notification is one short line, so the link shows without expanding: %r" % shown[0][1])
     links[-1][1]()
     cap.panel.kw["on_message"]({"command": "preview_ready"})
     msg = panels[0].posted[-1]
-    check(msg["title"] == "from the slice, before export" and abs(msg["stats"]["wave_mm"] - 26.0) < 0.1
+    check(msg["title"].startswith("from the slice") and abs(msg["stats"]["wave_mm"] - 26.0) < 0.1
           and any(l["c"] for l in msg["layers"]), "the panel shows the waves and outlines from the slice")
     cap._store_preview(gctx, {"preview": 1}, exported, True, True)
     check(w._PREVIEW["source"] == "gcode" and not w._SLICE_DIRTY, "the export replaces the slice preview")
@@ -246,6 +254,18 @@ def main():
     cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
     check(len(panels) == 1 and panels[0].posted[-1]["title"] == "plate.gcode" and links[-1][0] == "Show waves",
           "the open panel is refreshed with the exported data, and the link is offered again")
+    # Plugins dialog > Show Wave Preview: opens the panel again, also after it was closed
+    action = w.ShowWavePreview()
+    panels[0].open = False
+    w._panel_closed()
+    n = len(panels)
+    result = action.execute()
+    check(len(panels) == n + 1 and "opened" in result[1], "the Show Wave Preview action reopens the closed panel")
+    action.execute()
+    check(len(panels) == n + 1 and panels[-1].shows >= 1, "and brings the open one forward instead of opening another")
+    w._PREVIEW = None
+    action.execute()
+    check(messages and "no wave preview yet" in messages[-1][1], "with nothing to show it says how to get something")
     w._PREVIEW = None
     w._SLICE_DIRTY = True
     shown.clear(); links.clear()
