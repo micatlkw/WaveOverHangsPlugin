@@ -266,7 +266,22 @@ side panel is open (bold text "side panel open: see the Prepare or Preview tab")
 and it follows the panel when it is opened/closed any other way. Tests in `tests/notifications_test.py`;
 layout checked in Chrome (wide and narrow).
 
-## 20. Next
+## 20. Settings page and print time (user feedback on 0.10.1) — done in code, not yet run
 
-Check 0.10.1 in OrcaSlicer, then push and tag (v0.8.x to v0.10.x are untagged). Also: add the "second
+(1) "I do not see the parameter to open the panel": OrcaSlicer's Plugins dialog lists only the stored
+configuration and `orca_plugins/config.json` / the presets held nothing for Wave Overhangs, so no
+setting showed. 0.11.0 adds a settings page (all 23 settings, defaults filled in, units, help, validation).
+(2) "OrcaSlicer's preview shows the wrong time": the slicer's estimate (M73 lines, footer estimate) leaves
+out the waves. 0.11.0: the preview panel shows slicer + waves = total; `adjust_print_time` (default on)
+corrects the M73 lines and the estimate line in the exported G-code. Tests: `tests/config_page_test.py`
+(Chrome), `tests/print_time_test.py`, `tests/preview_page_test.py` (time line).
+
+To check in OrcaSlicer: Plugins dialog > Wave Overhangs > settings: the page should list everything,
+including "Open the side panel after slicing"; save it. Export, then open the exported file: the footer
+estimate and the first `M73 P0 R..` line should be the slicer's time plus the waves'; the panel's time line
+should say the same. Unknown: how accurate the waves' time is against a real print (no acceleration).
+
+## 21. Next
+
+Check 0.11.0 in OrcaSlicer, then push and tag (v0.8.x to v0.11.0 are untagged). Also: add the "second
 window" sentence to the preview proposal; README note for macOS.

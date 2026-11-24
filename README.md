@@ -98,8 +98,11 @@ object regardless, set `apply_to` to `all`.
 
 ## Settings
 
-Edit these under **Others → Plugin Configuration** in the process settings, then save the
-preset. Distances are in mm.
+Open them in the **Plugins** dialog (expand **Wave Overhangs** and open the settings of the
+pipeline plugin), or from the process settings under **Others → Plugin Configuration**. The
+settings page lists every setting below with its unit and an explanation, showing the default
+for any you have not changed (a changed one is marked with a dot until you save). **Save**, then
+save the process preset to keep the values. Distances are in mm.
 
 ### Which overhangs get waves
 
@@ -137,13 +140,25 @@ preset. Distances are in mm.
 | `travel_speed_mm_s` | `40` | Travel speed between wave lines. |
 | `fan_speed_percent` | `100` | Part-cooling fan while printing waves and kept walls. The slicer's fan setting is restored afterwards. |
 | `wall_speed_mm_s` | `0` | Speed of the kept walls. `0` uses the slicer's speed for fully overhanging walls (Speed → Overhang speed, the 75–100% value), or its bridge speed if that isn't set. |
+| `adjust_print_time` | `1` | The slicer's time estimate leaves out the waves. `1` corrects the print-time information in the exported G-code: the `M73` progress and remaining-time lines (what a printer's display shows) and the "estimated printing time" line. `0` leaves the slicer's numbers as they are. |
 
 These values come from the printer and filament profiles: nozzle diameter (used as the wave
 line width), retraction length (capped at 2 mm), filament diameter, relative/absolute E, wall
 and bridge line widths, and resolution.
 
 **Print time:** waves are slow. A ~45 mm disc on a 32 mm square column takes about 16
-minutes of waves on its one overhang layer. The report gives the added time for each export.
+minutes of waves on its one overhang layer. OrcaSlicer's own estimate (in its slice summary and
+in the exported file's name) leaves the waves out, so:
+
+- the **wave preview** shows the corrected time: before an export, how long the waves add; after
+  it, "slicer + waves = total" (the waves' part is an estimate from their length and speed, so
+  it ignores acceleration);
+- the **exported G-code** gets the same correction (`adjust_print_time`): every `M73` line has
+  the waves still ahead of it added to its remaining time, the percentages are recomputed, and
+  the "estimated printing time" line becomes the total. A printer that shows `M73` progress
+  then counts down the real time;
+- the **file name** still carries the slicer's time, since OrcaSlicer names the file before the
+  plugin runs.
 
 ## The report
 
@@ -190,8 +205,8 @@ Inside the file, each layer's waves sit between `; WAVE_OVERHANGS_START` and
 
 ## Known limits
 
-- **Preview:** on non-Bambu printers the slicer's preview, print time and filament estimate
-  don't include the waves. Open the exported file in a second OrcaSlicer to see them (see
+- **Preview:** on non-Bambu printers the slicer's preview, print time (also in the file name) and
+  filament estimate don't include the waves; the wave preview and the corrected G-code do show the time. Open the exported file in a second OrcaSlicer to see them (see
   [How it works](#how-it-works)). A
   [proposal to OrcaSlicer](docs/upstream-proposal-preview-postprocess.md) would fix this.
 - **Plugins can't add toolpaths** to OrcaSlicer yet, so the waves are added to the G-code text

@@ -109,6 +109,7 @@ def main():
         found = glob.glob("/path/to/your/exports/waveoverhangs-207-wall-loop.gcode")
         real = found[0] if found else None
     data, title = load_data(real)
+    data["time"] = {"slicer_s": 1858, "waves_s": 1740}      # 31 min + 29 min, as the plugin sends after an export
     layers = data["layers"]
     waved = [i for i, l in enumerate(layers) if l["w"]]
     kept = [i for i, l in enumerate(layers) if l["k"]]
@@ -129,6 +130,14 @@ def main():
     check(tag_side and "hidden" in tag_side, "the side panel's page does not")
     path = build_html(data, title, out_dir)
     dom = chrome(path, "", ["--dump-dom", "--virtual-time-budget=4000"]).stdout
+    check("Estimated print time: 31 min from the slicer + 29 min for the waves = 1 h 0 min" in dom,
+          "the panel shows the slicer's time plus the waves' time")
+    data["time"] = {"slicer_s": None, "waves_s": 1740}
+    dom_slice = chrome(build_html(data, title, out_dir), "", ["--dump-dom", "--virtual-time-budget=4000"]).stdout
+    check("The waves add about 29 min to the print time. The total shows after you export." in dom_slice,
+          "before an export it says what the waves add and when the total comes")
+    data["time"] = {"slicer_s": 1858, "waves_s": 1740}
+    path = build_html(data, title, out_dir)
     check('id="status" class="bad"' not in dom, "page loads without a script error")
     check(("%d layers" % len(layers)) in dom, "status line reports %d layers" % len(layers))
 

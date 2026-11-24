@@ -18,7 +18,7 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 
 Current state:
 
-- `wave_overhangs_plugin.py` — the plugin (v0.10.1: several objects and copies per plate;
+- `wave_overhangs_plugin.py` — the plugin (v0.11.0: several objects and copies per plate;
   gentle slopes keep the slicer's walls, `min_overhang_mm` = 0.5; one wall kept along the
   edge of wide overhangs, `outer_walls` = 1). Ports the fork's generator with pyclipper
   and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
@@ -238,6 +238,22 @@ non-Bambu printers, see `docs/upstream-proposal-preview-postprocess.md`):
   x). With nothing to show the page gets an `info` line and the box goes back to unticked. `open_panel` = 1 opens the side panel by itself: `_slice` sets `_AUTO_OPEN`,
   the first fresh preview after it (`_take_auto_open()`) opens the panel, later exports only refresh an
   open one (a panel the user closed stays closed).
+- **Settings page (v0.11.0)**: OrcaSlicer's Plugins dialog shows only the *stored* configuration
+  (`PresetPluginConfigService::get_effective_config`: the preset's override, else `orca_plugins/config.json`),
+  and nothing was ever stored for this plugin, so its settings did not show at all. `has_config_ui()` /
+  `get_config_ui()` give a page (`_CONFIG_FIELDS` + `CONFIG_PAGE`, built by `config_page_html()` with the defaults from
+  `_DEFAULTS`) that lists every setting, fills in defaults for the unset ones, marks changes, validates
+  numbers, keeps keys it has no control for, and uses the bridge `window.orca.getConfig/saveConfig/restoreDefaults/
+  onConfig` (`resources/web/dialog/js/plugin-config-ui.js`). A new setting needs an entry in `_DEFAULTS`,
+  `_CONFIG_FIELDS` and the README table (`tests/config_page_test.py` fails when a default has no control).
+- **Print time (v0.11.0)**: the slicer's estimate (the `M73 P<percent> R<minutes>` lines, the footer
+  `; estimated printing time (normal mode)`, in Bambu files `total estimated time` / `model printing time`)
+  leaves out the waves. Each wave block's start marker carries its time (`min=`; length / wave speed + travel +
+  kept-wall time, no acceleration). `_adjust_time()` (setting `adjust_print_time`) adds to every M73 line's R the
+  blocks still ahead of it, recomputes P from the new total, and rewrites the footer. The file name keeps the
+  slicer's time (OrcaSlicer names the file before post-processing). The preview data carries
+  `time: {slicer_s, waves_s}` (`_EXPORT_TIME` from the export; slice-time: waves only, `slicer_s` None) and the page shows
+  "slicer + waves = total".
 - **Notification duration (v0.8.2)**: `Important` fades after 20 s, so a notification with the link uses
   `HintNotificationLevel` (300 s; `NotificationManager.hpp` `get_standard_duration`; levels only change the
   duration for a custom notification); warnings never fade. Each capability of a plugin gets a ▶ Run button

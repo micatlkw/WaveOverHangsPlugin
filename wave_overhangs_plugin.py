@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.10.1"
+# version = "0.11.0"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhangs -- slicing-pipeline plugin.
@@ -119,6 +119,10 @@ _DEFAULTS = {
     # 1: the side panel opens by itself when slicing finishes (the first result of each slice, not
     # again after an export, so closing it stays closed). 0: open it from the link or the tab.
     "open_panel":               0,
+    # 1: after the waves are added, correct the G-code's print-time information (the M73
+    # progress/remaining lines and the "estimated printing time" line), which the slicer wrote
+    # without the waves. 0: leave the slicer's numbers as they are.
+    "adjust_print_time":        1,
 }
 _PATTERNS = ("smart", "monotonic", "zigzag")
 _CHOICES = {"pattern": _PATTERNS, "apply_to": ("unsupported", "all")}
@@ -1758,6 +1762,7 @@ def _wave_block(layer_cap, state, cal, bbl, cfg, totals):
 
     out = [_TAG + "_START z=" + _fmt(layer_cap["z"]) + " paths=" + str(len(layer_cap["paths"]))
            + (" walls=%d" % len(layer_cap["walls"]) if layer_cap.get("walls") else "") + "\n"]
+    t0 = (totals["length_mm"], totals["travel_mm"], totals.get("wall_s", 0.0))
 
     def tags(feature, width):
         if bbl:
@@ -1838,6 +1843,10 @@ def _wave_block(layer_cap, state, cal, bbl, cfg, totals):
     for tag_line in (state["feature_line"], state["width_line"], state["height_line"]):
         if tag_line is not None:
             out.append(tag_line if tag_line.endswith("\n") else tag_line + "\n")
+    seconds = ((totals["length_mm"] - t0[0]) / max(cfg["print_speed"], 0.1)
+               + (totals["travel_mm"] - t0[1]) / max(cfg["travel_speed"], 1.0)
+               + (totals.get("wall_s", 0.0) - t0[2]))
+    out[0] = out[0].rstrip("\n") + " min=%.3f\n" % (seconds / 60.0)
     out.append(_TAG + "_END\n")
     return out
 
@@ -1866,6 +1875,7 @@ PREVIEW_PAGE = r"""
   button.on { outline: 2px solid #1fb89a; }
   #wrap { flex: 1; position: relative; min-height: 120px; }
   canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; outline: none; }
+  #time { padding: 4px 8px 0; font-size: 12px; }
   #info, #status { padding: 2px 8px 6px; color: var(--orca-muted, #999); font-size: 11px; }
   .bad { color: #e5534b; }
   #sidewrap { margin-left: auto; padding-left: 10px; border-left: 1px solid var(--orca-border, #666); }
@@ -1887,6 +1897,7 @@ PREVIEW_PAGE = r"""
   <div class="row"><span id="lf" style="min-width:90px">from layer</span><input type="range" id="from" min="0" max="0" value="0"></div>
 </div>
 <div id="wrap"><canvas id="c" tabindex="0"></canvas></div>
+<div id="time"></div>
 <div id="info"></div>
 <div id="status">waiting for the plugin...</div>
 <script>
@@ -1997,6 +2008,7 @@ PREVIEW_PAGE = r"""
     applyHash();
     fit();
     syncUI();
+    showTime();
     var st = msg.stats || {};
     statusEl.textContent = L.length + " layers, " + (st.numbers || 0) + " numbers" +
       (msg.title ? " - " + msg.title : "");
@@ -2080,6 +2092,19 @@ PREVIEW_PAGE = r"""
     infoEl.textContent = "z " + L[S.to].z + " mm   shown: waves " + Math.round(sum.w) + " mm, kept walls " +
       Math.round(sum.k) + " mm   (whole print: waves " + Math.round((data.stats || {}).wave_mm || 0) + " mm on " +
       wavedLayers.length + " layers)";
+  }
+
+  function dur(s) {       // to the nearest minute
+    var min = Math.round(s / 60), h = Math.floor(min / 60), m = min % 60;
+    return h ? h + " h " + m + " min" : (min ? min + " min" : Math.round(s) + " s");
+  }
+  function showTime() {    // the slicer's estimate leaves out the waves: say what the print really takes
+    var t = data && data.time, el = $("time");
+    if (!t || !t.waves_s) { el.textContent = ""; return; }
+    el.textContent = t.slicer_s
+      ? "Estimated print time: " + dur(t.slicer_s) + " from the slicer + " + dur(t.waves_s) + " for the waves = " +
+        dur(t.slicer_s + t.waves_s)
+      : "The waves add about " + dur(t.waves_s) + " to the print time. The total shows after you export.";
   }
 
   function refresh() { syncUI(); draw(); }
@@ -2312,6 +2337,208 @@ def extract_preview(lines, e_relative, tol_mm=0.02):
             "stats": stats}
 
 
+# The settings page (Plugins dialog > Wave Overhangs > settings). OrcaSlicer shows only the stored
+# configuration, and nothing is stored until the user saves, so without a page of its own the plugin
+# would list no settings at all. The page lists every setting with its stored value or default.
+# Each entry: group, key, label, type ("number", "integer", "choice", "switch"), unit, min, max, step, help.
+_CONFIG_FIELDS = [
+    ("Which overhangs get waves", "min_overhang_mm", "Gentle slopes keep normal walls up to", "number", "mm per layer", 0, 10, 0.05,
+     "Overhang that reaches no further than this past the layer below keeps the slicer's own walls. 0 waves every overhang."),
+    ("Which overhangs get waves", "min_length_mm", "Skip overhangs shorter than", "number", "mm", 0, 1000, 0.5,
+     "Overhangs whose outline is shorter than this get no waves. 0 keeps every one."),
+    ("Which overhangs get waves", "apply_to", "Objects", "choice", "", None, None, None,
+     "Objects with Orca's Enable support on are left alone, so the support toggle chooses between supports and waves. Or wave every object."),
+    ("Which overhangs get waves", "outer_walls", "Walls kept along wide overhangs", "integer", "walls", 0, 5, 1,
+     "Normal walls printed against the waves along wide overhangs, so their side looks like the rest. Steeper, narrower overhangs are waved to the edge. 0 never keeps one."),
+    ("Which overhangs get waves", "enabled", "Add waves", "switch", "", None, None, None,
+     "Off: only measure and write the report. Nothing is cut and no waves are added."),
+    ("Wave shape", "line_spacing_mm", "Line spacing", "number", "mm", 0.05, 2, 0.01,
+     "Distance between wave fronts."),
+    ("Wave shape", "perimeter_overlap_mm", "Overlap with the edge", "number", "mm", 0, 1, 0.01,
+     "Grow the waved area by this much so the waves overlap the walls and the edge they start from."),
+    ("Wave shape", "minimum_wave_width_mm", "Narrowest area waved as one", "number", "mm", 0, 5, 0.05,
+     "Split the area at necks narrower than this, so each side fills on its own."),
+    ("Wave shape", "pattern", "Pattern", "choice", "", None, None, None,
+     "The order the fronts are printed in."),
+    ("Wave shape", "min_new_area_mm2", "Stop when a front adds less than", "number", "mm\u00b2", 0, 10, 0.01,
+     "Stop growing fronts when one adds less area than this."),
+    ("Wave shape", "max_iterations", "Most fronts per area", "integer", "fronts", 0, 10000, 1,
+     "0 means no limit."),
+    ("Wave shape", "corner_taper_enable", "Closer lines at sharp corners", "switch", "", None, None, None,
+     "Place the fronts closer together near sharp corners."),
+    ("Wave shape", "line_spacing_corner_mm", "Line spacing at corners", "number", "mm", 0.05, 2, 0.01,
+     "Front spacing near a sharp corner."),
+    ("Wave shape", "corner_taper_distance_mm", "How far the corner spacing reaches", "number", "mm", 0, 20, 0.1,
+     "Distance from the corner over which the closer spacing is used."),
+    ("Wave shape", "corner_angle_threshold", "Sharp corner angle", "number", "degrees", 10, 179, 1,
+     "Corners sharper than this count as sharp."),
+    ("Printing the waves", "flow_mm3_per_mm", "Flow", "number", "mm\u00b3 per mm", 0.01, 1, 0.01,
+     "Plastic per mm of wave line. It does not depend on the layer height."),
+    ("Printing the waves", "print_speed_mm_s", "Wave speed", "number", "mm/s", 0.1, 100, 0.1,
+     "Waves are slow on purpose: each line has to cool against the one before it."),
+    ("Printing the waves", "travel_speed_mm_s", "Travel speed", "number", "mm/s", 1, 500, 1,
+     "Speed of the moves between wave lines."),
+    ("Printing the waves", "fan_speed_percent", "Part fan", "number", "%", 0, 100, 1,
+     "Part-cooling fan while printing waves and kept walls. The slicer's fan setting is restored afterwards."),
+    ("Printing the waves", "wall_speed_mm_s", "Kept wall speed", "number", "mm/s", 0, 300, 1,
+     "0 uses the slicer's speed for fully overhanging walls, or its bridge speed if that is not set."),
+    ("Printing the waves", "adjust_print_time", "Correct the print time in the G-code", "switch", "", None, None, None,
+     "The slicer's estimate leaves out the waves. On: the progress and remaining-time lines (M73) and the estimate line are corrected."),
+    ("Preview", "preview", "Wave preview", "switch", "", None, None, None,
+     "Offer the Show waves link after slicing and after an export, and keep the Wave Preview tab up to date."),
+    ("Preview", "open_panel", "Open the side panel after slicing", "switch", "", None, None, None,
+     "The side panel opens by itself when slicing finishes, beside OrcaSlicer's preview. Only once per slice: a panel you close stays closed."),
+]
+_CHOICE_LABELS = {"pattern": ("smart", "monotonic", "zigzag"), "apply_to": ("objects without supports", "every object")}
+
+
+def config_page_html():
+    """The settings page: every setting, with its default filled in where nothing is stored."""
+    fields = []
+    for group, key, label, kind, unit, lo, hi, step, help_ in _CONFIG_FIELDS:
+        f = {"group": group, "key": key, "label": label, "type": kind, "unit": unit.replace("\\u00b2", "\u00b2"),
+             "help": help_, "default": _DEFAULTS[key]}
+        if kind in ("number", "integer"):
+            f.update({"min": lo, "max": hi, "step": step})
+        if kind == "choice":
+            f["choices"] = list(_CHOICES[key])
+            f["choice_labels"] = list(_CHOICE_LABELS[key])
+        fields.append(f)
+    return CONFIG_PAGE.replace("__FIELDS__", json.dumps(fields).replace("<", "\\u003c"))
+
+
+CONFIG_PAGE = r"""
+<!doctype html>
+<meta charset="utf-8">
+<title>Wave Overhangs settings</title>
+<style>
+  html, body { margin: 0; background: var(--orca-bg, #1e1e1e); color: var(--orca-fg, #ddd); font: 13px sans-serif; }
+  body { padding: 12px 16px 70px; max-width: 760px; }
+  h3 { margin: 18px 0 6px; font-size: 14px; border-bottom: 1px solid var(--orca-border, #555); padding-bottom: 3px; }
+  h3:first-child { margin-top: 0; }
+  .row { display: grid; grid-template-columns: 250px 190px 1fr; gap: 4px 12px; align-items: center; padding: 5px 0; }
+  .row label { font-weight: 600; }
+  .row .ctl { display: flex; align-items: center; gap: 6px; }
+  .row input[type=number] { width: 90px; }
+  .row select { min-width: 130px; }
+  .unit { color: var(--orca-muted, #999); font-size: 12px; }
+  .help { color: var(--orca-muted, #999); font-size: 12px; }
+  .row.bad input { outline: 2px solid #e5534b; }
+  .row.changed label::after { content: " \2022"; color: #1fb89a; }
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 8px 16px; display: flex; gap: 10px; align-items: center;
+         background: var(--orca-bg, #1e1e1e); border-top: 1px solid var(--orca-border, #555); }
+  #msg { color: var(--orca-muted, #999); }
+  #msg.bad { color: #e5534b; }
+  @media (max-width: 640px) { .row { grid-template-columns: 1fr; } }
+</style>
+<div id="app"></div>
+<div id="bar">
+  <button type="button" id="save">Save</button>
+  <button type="button" id="restore">Restore defaults</button>
+  <span id="msg"></span>
+</div>
+<script>
+(function () {
+  "use strict";
+  var FIELDS = __FIELDS__;
+  var $ = function (id) { return document.getElementById(id); };
+  var ctrl = {}, rows = {}, stored = {};
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  var group = null, app = $("app");
+  FIELDS.forEach(function (f) {
+    if (f.group !== group) { group = f.group; app.appendChild(el("h3", null, group)); }
+    var row = el("div", "row"), label = el("label", null, f.label), box = el("div", "ctl"), input;
+    if (f.type === "choice") {
+      input = el("select");
+      f.choices.forEach(function (c, i) { var o = el("option", null, (f.choice_labels || f.choices)[i]); o.value = c; input.appendChild(o); });
+    } else {
+      input = el("input");
+      if (f.type === "switch") input.type = "checkbox";
+      else { input.type = "number"; input.min = f.min; input.max = f.max; input.step = f.step; }
+    }
+    input.id = "f_" + f.key; input.setAttribute("data-key", f.key); label.htmlFor = input.id;
+    input.addEventListener("input", mark); input.addEventListener("change", mark);
+    box.appendChild(input);
+    if (f.unit) box.appendChild(el("span", "unit", f.unit));
+    row.appendChild(label); row.appendChild(box); row.appendChild(el("div", "help", f.help));
+    app.appendChild(row);
+    ctrl[f.key] = input; rows[f.key] = row;
+  });
+
+  // The stored value of a field, or its default when it is missing or unusable.
+  function valueOf(f, cfg) {
+    var v = cfg[f.key];
+    if (f.type === "choice") { v = String(v).toLowerCase(); return f.choices.indexOf(v) >= 0 ? v : f["default"]; }
+    if (f.type === "switch") return v === undefined || v === null ? f["default"] : ((v === true || Number(v) > 0) ? 1 : 0);
+    var n = Number(v);
+    return v === undefined || v === null || v === "" || isNaN(n) ? f["default"] : n;
+  }
+
+  function setControl(f, v) {
+    if (f.type === "switch") ctrl[f.key].checked = !!v; else ctrl[f.key].value = v;
+  }
+
+  // The form's values; null for a field that is not a valid number in range (marked).
+  function read() {
+    var cfg = {}, bad = 0;
+    FIELDS.forEach(function (f) {
+      var c = ctrl[f.key], v;
+      if (f.type === "switch") v = c.checked ? 1 : 0;
+      else if (f.type === "choice") v = c.value;
+      else {
+        v = c.value === "" ? NaN : Number(c.value);
+        if (isNaN(v) || v < f.min || v > f.max) { rows[f.key].className = "row bad"; bad++; return; }
+        if (f.type === "integer") v = Math.round(v);
+      }
+      cfg[f.key] = v;
+    });
+    return bad ? null : cfg;
+  }
+
+  function mark() {            // dot the fields that differ from what is stored
+    var base = {};
+    FIELDS.forEach(function (f) { base[f.key] = valueOf(f, stored); });
+    var changed = 0;
+    FIELDS.forEach(function (f) {
+      var c = ctrl[f.key], now = f.type === "switch" ? (c.checked ? 1 : 0) : (f.type === "choice" ? c.value : Number(c.value));
+      var diff = now !== base[f.key];
+      rows[f.key].className = "row" + (diff ? " changed" : "");
+      if (diff) changed++;
+    });
+    $("msg").className = "";
+    $("msg").textContent = changed ? changed + " unsaved change" + (changed > 1 ? "s" : "") + " (marked)" : "";
+  }
+
+  function load(cfg) {
+    stored = cfg || {};
+    FIELDS.forEach(function (f) { setControl(f, valueOf(f, stored)); });
+    mark();
+  }
+
+  $("save").addEventListener("click", function () {
+    var cfg = read();
+    if (!cfg) { $("msg").className = "bad"; $("msg").textContent = "Check the marked values: they are not numbers in range."; return; }
+    var out = {}, k;                                 // keep keys this page has no control for
+    for (k in stored) if (Object.prototype.hasOwnProperty.call(stored, k)) out[k] = stored[k];
+    for (k in cfg) out[k] = cfg[k];
+    window.orca.saveConfig(out);
+    $("msg").textContent = "Saved. Save the process preset to keep it.";
+  });
+  $("restore").addEventListener("click", function () { window.orca.restoreDefaults(); });
+
+  window.orca.onConfig(function (cfg) { load(cfg); });
+})();
+</script>
+"""
+
+
 def _wall_speed(ctx, p):
     """mm/s for the kept walls: the plugin setting, else the slicer's speed for fully
     overhanging walls (overhang_4_4_speed, mm/s or % of the outer wall speed), else its
@@ -2332,6 +2559,8 @@ def _wall_speed(ctx, p):
 def _post_process(lines, captures, survived, cfg, notes=None):
     """Returns (new_lines, summary). `captures` is {object id: capture}. Lines for the user's
     notification are appended to `notes` as (text, level)."""
+    global _EXPORT_TIME
+    _EXPORT_TIME = None
     notes = [] if notes is None else notes
     report = ["version %s; state hand-over: module global %s, capability instance %s"
               % (_VERSION, "kept" if survived[0] else "LOST", "kept" if survived[1] else "LOST")]
@@ -2357,7 +2586,95 @@ def _object_name(cap, oid):
     return "%s (#%s)" % (name, cap["index"]) if cap.get("index") is not None else "%s (id %s)" % (name, oid)
 
 
+_EXPORT_TIME = None    # {"slicer_s", "waves_s"} of the last export that added waves (for the preview)
+_DUR = re.compile(r"(\d+)\s*([dhms])")
+_M73 = re.compile(r"^M73 P(\d+) R(\d+)(.*?)(\r?\n?)$")
+_EST = re.compile(r"^(; estimated printing time \(normal mode\) = )(.+?)\s*(\r?\n?)$")
+
+
+def _parse_duration(text):
+    """Seconds in OrcaSlicer's "1d 2h 3m 4s" form (any leading parts may be missing)."""
+    return sum(int(n) * {"d": 86400, "h": 3600, "m": 60, "s": 1}[u] for n, u in _DUR.findall(text))
+
+
+def _fmt_duration(seconds):
+    seconds = int(round(seconds))
+    d, r = divmod(seconds, 86400)
+    h, r = divmod(r, 3600)
+    m, s = divmod(r, 60)
+    if d:
+        return "%dd %dh %dm %ds" % (d, h, m, s)
+    if h:
+        return "%dh %dm %ds" % (h, m, s)
+    if m:
+        return "%dm %ds" % (m, s)
+    return "%ds" % s
+
+
+def _slicer_seconds(lines):
+    """The slicer's print-time estimate: the "estimated printing time" line at the end of the file,
+    else the remaining time of the first M73 line."""
+    for line in reversed(lines):
+        m = _EST.match(line)
+        if m:
+            return _parse_duration(m.group(2))
+    for line in lines:
+        m = _M73.match(line)
+        if m:
+            return int(m.group(2)) * 60
+    return None
+
+
+def _adjust_time(lines):
+    """Add the waves' time to the G-code's print-time information, in place.
+
+    The slicer wrote it without the waves: `M73 P<percent> R<minutes left>` lines (a printer's
+    display, Klipper's, ...), the footer's "estimated printing time" and, in Bambu files, "total
+    estimated time". Each wave block carries its time (min=) in its start marker, so every M73
+    line gets the time of the blocks still ahead of it added to R, and its percentage is
+    recomputed from the new total. Returns a line for the report."""
+    blocks = []
+    for line in lines:
+        if line.startswith(_TAG + "_START"):
+            m = re.search(r" min=([0-9.]+)", line)
+            blocks.append(float(m.group(1)) if m else 0.0)
+    waves_min = sum(blocks)
+    if waves_min <= 0:
+        return "print time: nothing to adjust"
+    old_s = _slicer_seconds(lines)
+    if old_s is None:
+        return "print time: the file has no estimate to adjust"
+    old_min = old_s / 60.0
+    new_min = old_min + waves_min
+    before, done, last_p, changed = 0.0, 0, 0, 0
+    for i, line in enumerate(lines):
+        if line.startswith(_TAG + "_END"):
+            before += blocks[done] if done < len(blocks) else 0.0
+            done += 1
+            continue
+        m = _M73.match(line)
+        if m:
+            remaining = int(m.group(2))
+            r_new = max(0, int(round(remaining + waves_min - before)))
+            elapsed = max(0.0, old_min - remaining) + before
+            last_p = min(100, max(last_p, int(round(100.0 * elapsed / new_min))))
+            lines[i] = "M73 P%d R%d%s%s" % (last_p, r_new, m.group(3), m.group(4))
+            changed += 1
+            continue
+        m = _EST.match(line)
+        if m:
+            lines[i] = "%s%s%s" % (m.group(1), _fmt_duration(_parse_duration(m.group(2)) + waves_min * 60.0), m.group(3))
+    for i in range(min(len(lines), 300)):       # Bambu files: the totals in the header
+        lines[i] = re.sub(r"((?:total estimated time|model printing time): )([0-9dhms ]+)",
+                          lambda m: m.group(1) + _fmt_duration(_parse_duration(m.group(2)) + waves_min * 60.0) + (
+                              " " if m.group(2).endswith(" ") else ""), lines[i])
+    return "print time: slicer %s + waves %s = %s; %d M73 line(s) and the estimate line corrected" % (
+        _fmt_duration(old_s), _fmt_duration(waves_min * 60.0), _fmt_duration(old_s + waves_min * 60.0), changed)
+
+
 def _inject_all(lines, captures, cfg, report, notes):
+    global _EXPORT_TIME
+    _EXPORT_TIME = None
     for oid, cap in captures.items():
         if cap.get("skipped"):
             report.append("%s: %s, left alone" % (_object_name(cap, oid), cap["skipped"]))
@@ -2445,9 +2762,14 @@ def _inject_all(lines, captures, cfg, report, notes):
                      _fmt(totals["filament_mm"]), _fmt(minutes)))
     if plan:
         notes.append(("Wave Overhangs: waves added, %s." % _minutes_text(minutes), "info"))
+        waves_s = sum(float(m.group(1)) for m in (re.search(r" min=([0-9.]+)", l) for l in lines
+                                                  if l.startswith(_TAG + "_START")) if m) * 60.0
+        _EXPORT_TIME = {"slicer_s": _slicer_seconds(lines), "waves_s": waves_s}
+        if cfg.get("adjust_time"):
+            report.append(_adjust_time(lines))
 
 
-_VERSION = "0.10.1"
+_VERSION = "0.11.0"
 
 
 # ============================================================================
@@ -2533,12 +2855,17 @@ def _panel_closed():
     _notify_panel_state()
 
 
+def _wave_seconds(captures, print_speed):
+    """Rough time of all the waves (lines at the wave speed, every copy of every object)."""
+    return sum(cap["stats"]["length_mm"] * max(1, len(cap.get("instances") or [None]))
+               for cap in captures.values() if not cap.get("skipped")) / max(print_speed, 0.1)
+
+
 def _slice_summary(captures, print_speed):
     """One short line for the slice notification: how many layers get waves and for how long."""
     layers = {zk for cap in captures.values() if not cap.get("skipped")
               for zk, entry in cap["layers"].items() if entry["paths"]}
-    seconds = sum(cap["stats"]["length_mm"] * max(1, len(cap.get("instances") or [None]))
-                  for cap in captures.values() if not cap.get("skipped")) / max(print_speed, 0.1)
+    seconds = _wave_seconds(captures, print_speed)
     if not layers:
         return None
     return "Wave Overhangs: %d wave layer%s, %s." % (
@@ -2551,6 +2878,16 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
 
     def get_default_config(self):
         return _DEFAULTS
+
+    def has_config_ui(self):
+        """The Plugins dialog shows our settings page, not the raw editor (which lists only what was saved)."""
+        return True
+
+    def get_config_ui(self):
+        try:
+            return config_page_html()
+        except Exception:
+            return ""      # OrcaSlicer falls back to its own editor, so the settings stay reachable
 
     def execute(self, ctx):
         step = ctx.step
@@ -2688,6 +3025,7 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
             "travel_speed":      max(p["travel_speed_mm_s"], 1.0),
             "fan_speed":         min(max(p["fan_speed_percent"], 0.0), 100.0),
             "wall_speed":        _wall_speed(ctx, p),
+            "adjust_time":       p["adjust_print_time"] != 0,
             "connector_limit":   max(p["line_spacing_mm"], nozzle) + max(p["perimeter_overlap_mm"], 0.0),
             "line_width":        nozzle,
         }
@@ -2720,6 +3058,7 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
             started = time.time()
             try:
                 pv = extract_preview(lines, e_relative)
+                pv["time"] = _EXPORT_TIME
                 if pv["stats"]["wave_mm"] > 0:
                     data = {"data": pv, "fresh": True, "source": "gcode",
                             "title": os.path.basename(str(ctx.output_name or ctx.gcode_path))}
@@ -2745,6 +3084,7 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
             pv = build_slice_preview(captures)
             if pv["stats"]["wave_mm"] <= 0:
                 return
+            pv["time"] = {"slicer_s": None, "waves_s": _wave_seconds(captures, _params(self)["print_speed_mm_s"])}
             data = {"data": pv, "fresh": True, "source": "slice",
                     "title": "from the slice; the waves go into the G-code when you export"}
             _PREVIEW = data
