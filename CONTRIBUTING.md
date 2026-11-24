@@ -35,6 +35,23 @@ For security problems, see [SECURITY.md](SECURITY.md), not a public issue.
   reason and a note in `SECURITY.md`.
 - Do not commit G-code files, logs, local paths or personal details.
 
+## Maintainers
+
+- **Repository protections:** `dev/github_hardening.sh` (needs the GitHub CLI, logged in with admin rights)
+  applies them: Dependabot alerts, secret scanning with push protection, private vulnerability reporting,
+  CodeQL, a ruleset that blocks deleting or force-pushing `main` and requires pull requests, a ruleset that
+  stops `v*` tags from being moved or deleted, immutable releases, a read-only workflow token and approval
+  for workflows from outside contributors. Several of these exist only for a public repository, so run it
+  again right after making the repository public; it reports each step as OK or SKIP.
+- **Before a release:** re-check that the plugin imports nothing new that touches the network or starts
+  programs (`grep -n -E "socket|urllib|http|requests|subprocess|os.system|eval|exec|pickle|ctypes"`),
+  and audit the pinned dependencies (Dependabot does not read the plugin's header):
+  `pip install pip-audit && printf 'pyclipper==1.4.0\nnumpy==2.5.5\n' > pins.txt && pip-audit -r pins.txt --no-deps --disable-pip`.
+- **Publishing a release:** immutable releases are on, so a published release can never be changed. Tag the
+  commit, take the plugin file from the tag (`git show vX.Y.Z:wave_overhangs_plugin.py > wave_overhangs_plugin.py`),
+  write its checksum (`sha256sum wave_overhangs_plugin.py > wave_overhangs_plugin.py.sha256`), create the
+  release as a **draft** with both files attached, then publish it. A mistake means a new version.
+
 ## Licence
 
 The project is under the **GNU AGPL-3.0-or-later** (see `LICENSE`), because it ports AGPL code. By
