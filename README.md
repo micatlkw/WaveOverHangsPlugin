@@ -25,9 +25,7 @@ fork, so you do not need a separate build of OrcaSlicer: install one file in the
    **Install local plugin**, pick `wave_overhangs_plugin.py`, and switch the plugin on. (The first load needs internet: OrcaSlicer installs
    the plugin's two Python packages.)
 2. **Select it:** process settings → **Advanced** mode → **Others** → **Slicing Pipeline Plugin** → add
-   **Wave Overhangs**. Save the preset.
-   **Waves replace supports:** an object with **Enable support** on is left alone (the plugin tells you
-   so). Turn support off for the objects you want waved.
+   **Wave Overhangs**. Save the preset. Every object gets waves, supports on or off.
 3. **Several objects or copies?** Turn on **Exclude objects** (Others → G-code output).
 4. **Slice.** A notification says how many layers get waves, and the preview panel opens beside the 3D
    view.
@@ -58,12 +56,13 @@ Waves are added by the *process* you slice with. Switch the process settings to 
 **Others**, find **Slicing Pipeline Plugin** and add **Wave Overhangs**. Save the process preset so it
 stays selected.
 
-**Which objects get waves?** Every object whose **Enable support** is off. Turn OrcaSlicer's supports on
-for an object and the plugin leaves that object alone, so the support switch chooses between supports and
-waves for each object. **This is the most common reason for "no waves":** a new model takes the process's
-support setting, and if that is on the plugin skips it. After slicing, a notification names the objects it
-left alone ("Wave Overhangs left Koala.stl alone: Enable support is on for it"). To wave every object whatever
-its support setting, set `apply_to` to `all`.
+**Which objects get waves?** Every object, whatever its **Enable support** setting (`apply_to` = `all`, the
+default). Supports and waves work well together: OrcaSlicer generates its supports after the plugin has cut
+the overhang out of the layers, so the waves go in the layer the supports leave free, directly over them.
+Whether you want both is up to you: waves alone use less plastic and need no support removal. To make the
+support switch choose instead, set `apply_to` to `unsupported`: an object with **Enable support** on is then
+left alone, and after slicing a notification names it ("Wave Overhangs left Koala.stl alone: Enable support
+is on for it").
 
 **Several objects or copies on the plate?** Turn on **Exclude objects** or **Label objects** (Others →
 G-code output). The plugin uses the labels in the G-code to tell the copies apart and put each one's
@@ -168,7 +167,7 @@ All settings, with their defaults. Distances are in mm. (The settings page shows
 | `min_overhang_mm` | `0.5` | Overhang that reaches no further than this past the layer below keeps the slicer's normal walls. Meant for gentle slopes: at 0.2 mm layers, 0.5 mm per layer is about 68° from vertical. Where such a slope joins an overhang that reaches further, the strip next to it is still waved, because the waves need it as their anchor. `0` waves every overhang, as the fork does. |
 | `min_length_mm` | `0` | Skip overhangs whose outline is shorter than this. |
 | `outer_walls` | `1` | Normal walls kept along the edge of wide overhangs, printed right after the waves, innermost first; the waves fill the area inside them. Chosen automatically per overhang: a wall is kept only where the overhang reaches past it plus two wave lines (about 1.1 mm per layer with the defaults, roughly 80° from vertical at 0.2 mm layers), so the waves inside can carry it. Steeper, narrower overhangs are waved right to the edge, and where one joins a wide overhang only the wide part gets a wall. `0` never keeps a wall. At most the process's wall count. |
-| `apply_to` | `unsupported` | `unsupported`: objects with OrcaSlicer's **Enable support** on are left alone. `all`: wave every object. |
+| `apply_to` | `all` | `all`: every object gets waves, including those with OrcaSlicer's **Enable support** on; the supports and the waves work well together. `unsupported`: objects with **Enable support** on are left alone, so that switch chooses between supports and waves (and the plugin tells you which objects it left alone). |
 | `enabled` | `1` | `0` only measures and writes the report. Nothing is cut and no waves are added. |
 
 ### Wave shape
@@ -241,7 +240,7 @@ Each layer's waves sit between `; WAVE_OVERHANGS_START` and `; WAVE_OVERHANGS_EN
 
 | You see | Meaning and fix |
 |---|---|
-| A notification *"Wave Overhangs left ... alone: Enable support is on"*, no waves, an empty preview | Those objects have **Enable support** on, so the plugin leaves them for the supports. Turn support off for them (Support settings, or the object's own settings) and slice again, or set `apply_to` to `all`. |
+| A notification *"Wave Overhangs left ... alone: Enable support is on"*, no waves, an empty preview | `apply_to` is set to `unsupported`, so objects with **Enable support** on are left to the supports. Set `apply_to` back to `all`, or turn support off for those objects, and slice again. |
 | No waves, and a warning *"OrcaSlicer reused an earlier slice"* (report: `nothing captured at slice time`) | The plugin never saw the slice: it was not selected, or OrcaSlicer reused an earlier slice (it does after you reinstall or update the plugin). Remove Wave Overhangs from **Slicing Pipeline Plugin**, slice, add it back, slice again, export. |
 | `WARNING: ... the slices were not cut` | OrcaSlicer reused slicing from before the plugin was selected, so the slicer's own walls are still in the overhang. Make it slice again from the start (change a slicing setting and slice). |
 | *"With several objects, turn on Exclude objects or Label objects"* | Turn on **Exclude objects** or **Label objects** (Others → G-code output). |

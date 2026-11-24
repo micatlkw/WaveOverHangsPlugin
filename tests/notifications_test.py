@@ -124,7 +124,7 @@ def main():
     # per-object support toggle
     w._STATE.clear()
     supported, plain = FakeObject(1, True), FakeObject(2, False)
-    cap = capability({})
+    cap = capability({"apply_to": "unsupported"})
     res = cap.execute(slice_ctx(supported, [supported, plain]))
     capt = w._STATE[1]
     check(capt.get("skipped") == "Orca supports are on" and capt["cut_layers"] == 0
@@ -134,6 +134,10 @@ def main():
     check(not w._STATE[2].get("skipped"), "object without supports is processed")
     capability({"apply_to": "all"}).execute(slice_ctx(supported, [supported, plain]))
     check(not w._STATE[1].get("skipped"), "apply_to = all processes it too")
+    w._STATE.clear()
+    capability({}).execute(slice_ctx(supported, [supported, plain]))
+    check(not w._STATE[1].get("skipped") and w._DEFAULTS["apply_to"] == "all",
+          "by default every object is processed, supports on or off")
     report = []
     w._STATE[1]["skipped"] = "Orca supports are on"
     w._inject_all(gi.build("klipper", gi.INSTANCES), {1: w._STATE[1]}, dict(gi.CFG), report, [])
@@ -401,7 +405,7 @@ def main():
         w._STATE.clear(); w._PREVIEW = None; w._SLICE_DIRTY = False; w._AUTO_OPEN = False; w._PANEL = None
         w._take_notes(); shown.clear(); links.clear(); messages.clear(); panels.clear()
         w._JOB.update(ran=False, skipped=[], last_skipped=[])
-        c = capability({})
+        c = capability({"apply_to": "unsupported"})
         c.on_lifecycle_event("SliceStarted", types.SimpleNamespace(code="Ok"))
         return c
     done = types.SimpleNamespace(code="Ok")

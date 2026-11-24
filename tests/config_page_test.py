@@ -88,7 +88,7 @@ def main():
     check(set(saved) == set(keys), "nothing stored: Save writes all %d settings (%s missing)"
           % (len(keys), sorted(set(keys) - set(saved))))
     check(saved.get("open_panel") == 1 and saved.get("preview") == 1 and saved.get("pattern") == "smart"
-          and saved.get("min_overhang_mm") == 0.5 and saved.get("apply_to") == "unsupported",
+          and saved.get("min_overhang_mm") == 0.5 and saved.get("apply_to") == "all",
           "and they are the defaults, open_panel among them")
     check(all(abs(saved[k] - w._DEFAULTS[k]) < 1e-9 for k in keys if not isinstance(w._DEFAULTS[k], str)),
           "every number equals the plugin's default")

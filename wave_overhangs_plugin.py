@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.12.1"
+# version = "0.13.0"
 # type = "slicing-pipeline"
 # ///
 # SPDX-License-Identifier: AGPL-3.0-or-later
@@ -117,9 +117,11 @@ _DEFAULTS = {
     "fan_speed_percent":        100,
     # 0: measure and report only, change nothing (slices are left uncut too)
     "enabled":                  1,
-    # "unsupported": objects with Orca's "Enable support" on are left alone, so the per-object
-    # support toggle chooses between supports and waves. "all": wave every object.
-    "apply_to":                 "unsupported",
+    # "all": every object gets waves, also those with Orca's "Enable support" on (the supports are
+    # generated from the layers after the waves are cut out, and the two work well together).
+    # "unsupported": objects with Enable support on are left alone, so that toggle chooses between
+    # supports and waves.
+    "apply_to":                 "all",
     # 1: after an export, the notification offers "Show waves": a panel beside the 3D view that
     # draws the exported G-code's waves (the slicer's preview does not show them).
     "preview":                  1,
@@ -132,7 +134,7 @@ _DEFAULTS = {
     "adjust_print_time":        1,
 }
 _PATTERNS = ("smart", "monotonic", "zigzag")
-_CHOICES = {"pattern": _PATTERNS, "apply_to": ("unsupported", "all")}
+_CHOICES = {"pattern": _PATTERNS, "apply_to": ("all", "unsupported")}
 
 _WALL_ROLES = ("Outer wall", "Inner wall", "Overhang wall")
 _TAG = "; WAVE_OVERHANGS"
@@ -2390,7 +2392,7 @@ _CONFIG_FIELDS = [
     ("Which overhangs get waves", "min_length_mm", "Skip overhangs shorter than", "number", "mm", 0, 1000, 0.5,
      "Overhangs whose outline is shorter than this get no waves. 0 keeps every one."),
     ("Which overhangs get waves", "apply_to", "Objects", "choice", "", None, None, None,
-     "Objects with Orca's Enable support on are left alone, so the support toggle chooses between supports and waves. Or wave every object."),
+     "Waves for every object, also those with Orca's Enable support on (the two work well together). Or only objects without supports: then Enable support chooses between supports and waves, and an object left alone is reported."),
     ("Which overhangs get waves", "outer_walls", "Walls kept along wide overhangs", "integer", "walls", 0, 5, 1,
      "Normal walls printed against the waves along wide overhangs, so their side looks like the rest. Steeper, narrower overhangs are waved to the edge. 0 never keeps one."),
     ("Which overhangs get waves", "enabled", "Add waves", "switch", "", None, None, None,
@@ -2432,7 +2434,8 @@ _CONFIG_FIELDS = [
     ("Preview", "open_panel", "Open the side panel after slicing", "switch", "", None, None, None,
      "The side panel opens by itself when slicing finishes, beside OrcaSlicer's preview. Only once per slice: a panel you close stays closed."),
 ]
-_CHOICE_LABELS = {"pattern": ("smart", "monotonic", "zigzag"), "apply_to": ("objects without supports", "every object")}
+_CHOICE_LABELS = {"pattern": ("smart", "monotonic", "zigzag"),
+                  "apply_to": ("every object, supports or not", "only objects without supports")}
 
 
 def config_page_html():
@@ -2812,7 +2815,7 @@ def _inject_all(lines, captures, cfg, report, notes):
             report.append(_adjust_time(lines))
 
 
-_VERSION = "0.12.1"
+_VERSION = "0.13.0"
 
 
 # ============================================================================

@@ -3,7 +3,15 @@
 Versions are those in the plugin's header (`# version = ...`) and in the first line of the report in
 the exported G-code (`; WAVE_OVERHANGS version ...`).
 
-## 0.12.1 - 2026-11
+## 0.13.0 - 2026-11
+- **Waves are now made for every object, also those with Enable support on** (`apply_to` defaults to
+  `all`). Supports and waves work well together, and the plugin no longer looks broken when a new model
+  takes the process's support setting. Set `apply_to` to `unsupported` for the old behaviour.
+- An object left alone (`apply_to = unsupported`) is now reported on screen: a notification names it and
+  says how to fix it (a warning that stays when nothing got waves), and the empty preview says why.
+  Before, it was only written to the log.
+
+## 0.12.1 - 2026-11 (not released)
 - An object left alone because **Enable support** is on is now reported on screen: a notification names
   it and says how to fix it (a warning that stays when nothing got waves), and the empty preview says
   why. Before, it was only written to the log, so a model sliced with supports on showed no waves, no

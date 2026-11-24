@@ -18,7 +18,7 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 
 Current state:
 
-- `wave_overhangs_plugin.py` — the plugin (v0.12.1: several objects and copies per plate;
+- `wave_overhangs_plugin.py` — the plugin (v0.13.0: several objects and copies per plate;
   gentle slopes keep the slicer's walls, `min_overhang_mm` = 0.5; one wall kept along the
   edge of wide overhangs, `outer_walls` = 1). Ports the fork's generator with pyclipper
   and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
@@ -190,7 +190,7 @@ User feedback (v0.6.0, borrowed from the Support Fins plugin in `../support-fins
   warning (stays until closed), else Important (20 s). A cancelled job shows nothing, a failed
   one only its warnings; lines older than 10 min are dropped (post-processing outside a job,
   e.g. saving a 3MF with G-code, would otherwise surface on the next slice).
-- **Per-object toggle**: `apply_to` = `unsupported` (default) leaves objects with
+- **Per-object toggle**: `apply_to` = `unsupported` (not the default since v0.13.0: `all`) leaves objects with
   `enable_support` on alone (`PrintObject.config_value`); they still get a capture (layers and
   wall boxes, no waves) so their copies are matched and reported, not flagged as unplaceable.
 - **Log**: `_write_log()` appends JSON lines to `wave_overhangs_log.jsonl` next to the plugin
@@ -262,6 +262,10 @@ non-Bambu printers, see `docs/upstream-proposal-preview-postprocess.md`):
   deliberately and re-run the tests); every `.py` has an SPDX licence identifier (no copyright line, by the maintainer's choice); the research-era files live
   in `dev/`; `SECURITY.md` states what the plugin does (no network, no subprocess, no dynamic code: re-check with
   a grep before each release); a `[hidden]` rule in the page CSS keeps tab-only elements hidden in the side panel.
+- **Supports + waves (v0.13.0)**: `apply_to` defaults to `all` because waves together with the slicer's supports
+  looked better in a real print (supports are generated after the plugin cuts the overhang out of `lslices`, so
+  they stop below the bridge floor and the waves fill the gap layer over them; not verified in the slicer's
+  support code). `unsupported` keeps the old "supports or waves" switch.
 - **Skipped objects are visible (v0.12.1)**: `apply_to = unsupported` leaves objects with `enable_support` on
   alone; `_slice` records them in `_JOB["skipped"]` (reset at `SliceStarted`), and `SlicingJobComplete` pushes
   `_skip_text()` as its own notification (Warning when nothing got waves, Important when other objects did; not
