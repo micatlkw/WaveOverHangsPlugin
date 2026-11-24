@@ -35,8 +35,10 @@ fork, so you do not need a separate build of OrcaSlicer: install one file in the
 
 ### 1. Install the plugin
 
-Download `wave_overhangs_plugin.py` from a [release](../../releases) (see [Security](#security) for how
-to check it). In OrcaSlicer open **Plugins** from the main menu, use *More plugin install options* →
+Download the single file `wave_overhangs_plugin.py` from the
+[latest release](../../releases/latest) (direct link:
+`https://github.com/micatlkw/WaveOverHangsPlugin/releases/latest/download/wave_overhangs_plugin.py`).
+See [Security](#security) for how to check it. In OrcaSlicer open **Plugins** from the main menu, use *More plugin install options* →
 **Install local plugin** and select the file. Then switch **Wave Overhangs** on in the list.
 
 You need **OrcaSlicer 2.5 or later** (the first release with the Python plugin system) and an internet

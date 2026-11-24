@@ -11,6 +11,10 @@ the exported G-code (`; WAVE_OVERHANGS version ...`).
 - A licence identifier (SPDX) on every source file; fuller credits; `SECURITY.md`,
   `CONTRIBUTING.md`, this changelog and a user guide with pictures.
 - The research-era files moved to `dev/`; the tests no longer need any local files.
+- Releases attach the plugin file itself (`wave_overhangs_plugin.py`) and its SHA-256
+  (`wave_overhangs_plugin.py.sha256`).
+- The export-time preview merges layer heights repeated when printing one object at a time; the
+  preview's "fit" leaves less empty margin; a tab-only checkbox no longer shows in the side panel.
 
 ## 0.11.0
 - A settings page that lists every setting with its unit and an explanation, filling in defaults

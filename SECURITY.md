@@ -43,9 +43,10 @@ tested before release.
 ## Checking what you install
 
 - Take the plugin from a tagged release of this repository, not from a copy someone sent you.
-- Each release lists the **SHA-256** of `wave_overhangs_plugin.py`. Compare it with yours
-  (`sha256sum wave_overhangs_plugin.py` on Linux/macOS, `certutil -hashfile wave_overhangs_plugin.py SHA256`
-  on Windows).
+- Each release lists the **SHA-256** of `wave_overhangs_plugin.py` in its notes and attaches it as
+  `wave_overhangs_plugin.py.sha256`. Compare it with yours: `sha256sum -c wave_overhangs_plugin.py.sha256`
+  on Linux, `shasum -a 256 -c wave_overhangs_plugin.py.sha256` on macOS, or on Windows
+  `certutil -hashfile wave_overhangs_plugin.py SHA256` and compare the text.
 - Read it if you like: it is one file with no obfuscation, and the dependency header is the first
   thing in it.
 - OrcaSlicer has its own plugin permission system. If it shows a permission request for this plugin,
