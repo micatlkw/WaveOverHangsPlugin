@@ -26,6 +26,8 @@ fork, so you do not need a separate build of OrcaSlicer: install one file in the
    the plugin's two Python packages.)
 2. **Select it:** process settings → **Advanced** mode → **Others** → **Slicing Pipeline Plugin** → add
    **Wave Overhangs**. Save the preset.
+   **Waves replace supports:** an object with **Enable support** on is left alone (the plugin tells you
+   so). Turn support off for the objects you want waved.
 3. **Several objects or copies?** Turn on **Exclude objects** (Others → G-code output).
 4. **Slice.** A notification says how many layers get waves, and the preview panel opens beside the 3D
    view.
@@ -58,7 +60,10 @@ stays selected.
 
 **Which objects get waves?** Every object whose **Enable support** is off. Turn OrcaSlicer's supports on
 for an object and the plugin leaves that object alone, so the support switch chooses between supports and
-waves for each object. To wave every object whatever its support setting, set `apply_to` to `all`.
+waves for each object. **This is the most common reason for "no waves":** a new model takes the process's
+support setting, and if that is on the plugin skips it. After slicing, a notification names the objects it
+left alone ("Wave Overhangs left Koala.stl alone: Enable support is on for it"). To wave every object whatever
+its support setting, set `apply_to` to `all`.
 
 **Several objects or copies on the plate?** Turn on **Exclude objects** or **Label objects** (Others →
 G-code output). The plugin uses the labels in the G-code to tell the copies apart and put each one's
@@ -236,6 +241,7 @@ Each layer's waves sit between `; WAVE_OVERHANGS_START` and `; WAVE_OVERHANGS_EN
 
 | You see | Meaning and fix |
 |---|---|
+| A notification *"Wave Overhangs left ... alone: Enable support is on"*, no waves, an empty preview | Those objects have **Enable support** on, so the plugin leaves them for the supports. Turn support off for them (Support settings, or the object's own settings) and slice again, or set `apply_to` to `all`. |
 | No waves, and a warning *"OrcaSlicer reused an earlier slice"* (report: `nothing captured at slice time`) | The plugin never saw the slice: it was not selected, or OrcaSlicer reused an earlier slice (it does after you reinstall or update the plugin). Remove Wave Overhangs from **Slicing Pipeline Plugin**, slice, add it back, slice again, export. |
 | `WARNING: ... the slices were not cut` | OrcaSlicer reused slicing from before the plugin was selected, so the slicer's own walls are still in the overhang. Make it slice again from the start (change a slicing setting and slice). |
 | *"With several objects, turn on Exclude objects or Label objects"* | Turn on **Exclude objects** or **Label objects** (Others → G-code output). |

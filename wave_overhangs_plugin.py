@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.12.0"
+# version = "0.12.1"
 # type = "slicing-pipeline"
 # ///
 # SPDX-License-Identifier: AGPL-3.0-or-later
@@ -196,6 +196,31 @@ def notification_level(notes, link=False):
 
 def _minutes_text(minutes):
     return "under a minute" if minutes < 0.5 else "about %d min" % int(round(minutes))
+
+
+# Objects left alone because Orca's "Enable support" is on for them. OrcaSlicer's own log gets a line,
+# but nothing appeared on screen, so a user who sliced a model with supports on saw no waves, no
+# notification and no preview and took the plugin for broken. "skipped" is this slice job's list;
+# "last_skipped" is kept for the preview's empty message; "ran" says the slicing step ran in this job
+# (OrcaSlicer reuses a cached slice without calling the plugin).
+_JOB = {"ran": False, "skipped": [], "last_skipped": []}
+
+
+def _skip_text(names):
+    """The notification for objects left alone because supports are on."""
+    shown = ", ".join(names[:3]) + (" and %d more" % (len(names) - 3) if len(names) > 3 else "")
+    fix = "Turn support off, or set apply_to to all in the plugin settings."
+    if len(names) == 1:
+        return "Wave Overhangs left %s alone: Enable support is on for it. %s" % (shown, fix)
+    return "Wave Overhangs left %d objects alone (%s): Enable support is on for them. %s" % (len(names), shown, fix)
+
+
+def _empty_text():
+    """What the preview says when there is nothing to show: the default hint, or why objects were skipped."""
+    names = _JOB["last_skipped"]
+    if not names:
+        return None
+    return ("No waves to show: " + _skip_text(names)[len("Wave Overhangs "):])
 
 
 def _write_log(entry):
@@ -2220,8 +2245,8 @@ PREVIEW_PAGE = r"""
       else if (msg.command === "panel_state") setSide(msg.open);
       else if (msg.command === "info") statusEl.textContent = msg.text || "";
       else if (msg.command === "empty" && !data)
-        statusEl.textContent = "No waves to show yet. Select Wave Overhangs as the Slicing Pipeline Plugin, " +
-                               "then slice a plate that has overhangs.";
+        statusEl.textContent = msg.text || ("No waves to show yet. Select Wave Overhangs as the Slicing Pipeline " +
+                                            "Plugin, then slice a plate that has overhangs.");
     });
     orca.postMessage({ command: "preview_ready" });
   } } catch (e) { fail(e.message || e); }
@@ -2787,7 +2812,7 @@ def _inject_all(lines, captures, cfg, report, notes):
             report.append(_adjust_time(lines))
 
 
-_VERSION = "0.12.0"
+_VERSION = "0.12.1"
 
 
 # ============================================================================
@@ -2970,6 +2995,7 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
 
     def _slice(self, ctx):
         p = _params(self)
+        _JOB["ran"] = True
         self._preview_enabled = p["preview"] != 0
         started = time.time()
         skip = self._skip_reason(ctx, p)
@@ -2986,6 +3012,8 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
         _write_log({"event": "slice", "object": name, "skipped": skip, "stats": st,
                     "cut_layers": cap["cut_layers"], "seconds": round(time.time() - started, 2), "settings": p})
         if skip:
+            if name not in _JOB["skipped"]:
+                _JOB["skipped"].append(name)
             return orca.ExecutionResult.success("Wave Overhangs: %s left alone (%s)" % (name, skip))
         if st["wave_layers"]:
             global _SLICE_DIRTY, _AUTO_OPEN
@@ -3140,11 +3168,17 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
                 _SEEN_EVENTS.add(name)
                 _write_log({"event": "lifecycle", "which": name, "code": str(getattr(ctx, "code", None))})
             ev = getattr(orca, "LifecycleEvent", None)
+            if ev is not None and event == ev.SliceStarted:
+                _JOB["ran"], _JOB["skipped"] = False, []
+                return
             if ev is None or event != ev.SlicingJobComplete:
                 return
             notes = _take_notes()
             code = getattr(orca, "LifecycleEvtCode", None)
             completed = code is None or getattr(ctx, "code", None) == code.Ok
+            skipped, _JOB["skipped"] = _JOB["skipped"], []
+            if completed and _JOB["ran"]:
+                _JOB["last_skipped"] = list(skipped)
             if not completed:
                 notes = [n for n in notes if n[1] == "warning"] if ctx.code == code.Error else []
             if completed:
@@ -3167,9 +3201,15 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
                 first = next(t for t, level in notes if level == "slice")
                 notes = [n for n in notes if n[1] != "slice"]
                 notes.insert(0, (summary or first, "info"))
+            ui = orca.host.ui
+            if skipped and completed:
+                # A warning (it stays) when nothing got waves; a short note when other objects did.
+                waved = any(level == "slice" for _, level in notes) or bool(fresh)
+                lvl = "ImportantNotificationLevel" if waved else "WarningNotificationLevel"
+                ui.push_notification(getattr(ui.NotificationLevel, lvl), _skip_text(skipped))
+                _write_log({"event": "skipped_notice", "objects": skipped, "level": lvl})
             if not notes:
                 return
-            ui = orca.host.ui
             level = getattr(ui.NotificationLevel, notification_level(notes, bool(fresh)))
             if fresh:
                 ui.push_notification(level, notification_text(notes), "Show waves", self._link_clicked)
@@ -3202,7 +3242,7 @@ class WavePreviewTab(orca.pages.PagesPluginCapabilityBase):
         command = data.get("command") if isinstance(data, dict) else None
         if command == "preview_ready":
             payload = _preview_payload()
-            self.post_message(payload if payload is not None else {"command": "empty"})
+            self.post_message(payload if payload is not None else {"command": "empty", "text": _empty_text()})
             _notify_panel_state()
         elif command == "side_panel":
             try:
@@ -3233,9 +3273,9 @@ class ShowWavePreview(orca.script.ScriptPluginCapabilityBase):
             return orca.ExecutionResult.success("Wave Overhangs: could not open the preview: %s" % e)
         if result == "no preview data":
             try:
-                orca.host.ui.message("There is no wave preview yet. Select Wave Overhangs as the Slicing Pipeline "
-                                     "Plugin, slice a plate that has overhangs, then run this again.",
-                                     "Wave Overhangs")
+                orca.host.ui.message(_empty_text() or ("There is no wave preview yet. Select Wave Overhangs as the "
+                                                       "Slicing Pipeline Plugin, slice a plate that has overhangs, "
+                                                       "then run this again."), "Wave Overhangs")
             except Exception:
                 pass
         return orca.ExecutionResult.success("Wave Overhangs: " + result)

@@ -18,7 +18,7 @@ Licensed AGPL-3.0 (`LICENSE`), because the generator is a port of the fork's AGP
 
 Current state:
 
-- `wave_overhangs_plugin.py` — the plugin (v0.12.0: several objects and copies per plate;
+- `wave_overhangs_plugin.py` — the plugin (v0.12.1: several objects and copies per plate;
   gentle slopes keep the slicer's walls, `min_overhang_mm` = 0.5; one wall kept along the
   edge of wide overhangs, `outer_walls` = 1). Ports the fork's generator with pyclipper
   and prints the waves through the G-code route. First real run inside OrcaSlicer (non-Bambu,
@@ -262,6 +262,12 @@ non-Bambu printers, see `docs/upstream-proposal-preview-postprocess.md`):
   deliberately and re-run the tests); every `.py` has an SPDX licence identifier (no copyright line, by the maintainer's choice); the research-era files live
   in `dev/`; `SECURITY.md` states what the plugin does (no network, no subprocess, no dynamic code: re-check with
   a grep before each release); a `[hidden]` rule in the page CSS keeps tab-only elements hidden in the side panel.
+- **Skipped objects are visible (v0.12.1)**: `apply_to = unsupported` leaves objects with `enable_support` on
+  alone; `_slice` records them in `_JOB["skipped"]` (reset at `SliceStarted`), and `SlicingJobComplete` pushes
+  `_skip_text()` as its own notification (Warning when nothing got waves, Important when other objects did; not
+  for a cached slice, which does not call `_slice`, nor a cancelled job). `_JOB["last_skipped"]` feeds the empty
+  preview text (`_empty_text()`, sent as `{command: "empty", text}`). Found in a real run where new models took
+  the process's "support on" and the plugin looked broken because it only logged.
 - **Notification duration (v0.8.2)**: `Important` fades after 20 s, so a notification with the link uses
   `HintNotificationLevel` (300 s; `NotificationManager.hpp` `get_standard_duration`; levels only change the
   duration for a custom notification); warnings never fade. Each capability of a plugin gets a ▶ Run button

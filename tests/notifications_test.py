@@ -154,6 +154,7 @@ def main():
           "warning when the plugin captured nothing (OrcaSlicer reused a slice)")
 
     # showing them
+    w._JOB.update(ran=False, skipped=[], last_skipped=[])       # the skip tests above are not part of this one
     w._take_notes()
     shown.clear()
     w._note("Wave Overhangs, part2: waves on 3 layer(s), about 4 min", "slice")
@@ -294,10 +295,11 @@ def main():
           and w._PAGE is tab,
           "the tab is named Wave Preview, serves the preview page and remembers its capability")
     w._PREVIEW = None
+    w._JOB.update(ran=False, skipped=[], last_skipped=[])
     tab.on_message(json.dumps({"command": "preview_ready"}))
     def sent(command):
         return [m for m in tab_posted if m.get("command") == command][-1]
-    check(sent("empty") == {"command": "empty"}, "with nothing to show the page is told so")
+    check(sent("empty") == {"command": "empty", "text": None}, "with nothing to show the page is told so")
     w._PREVIEW = {"data": w.build_slice_preview(ps.synthetic_captures()), "fresh": False, "source": "slice",
                   "title": "from the slice"}
     w._PANEL = None
@@ -393,6 +395,56 @@ def main():
     tab.on_message(json.dumps({"command": "side_panel", "open": True}))
     check(any("Nothing to show" in m.get("text", "") for m in tab_posted) and state()[-1] is False,
           "with nothing to show it says so and the checkbox goes back to unticked")
+
+    # objects left alone because Enable support is on: the user is told on screen, not only in the log
+    def fresh_job():
+        w._STATE.clear(); w._PREVIEW = None; w._SLICE_DIRTY = False; w._AUTO_OPEN = False; w._PANEL = None
+        w._take_notes(); shown.clear(); links.clear(); messages.clear(); panels.clear()
+        w._JOB.update(ran=False, skipped=[], last_skipped=[])
+        c = capability({})
+        c.on_lifecycle_event("SliceStarted", types.SimpleNamespace(code="Ok"))
+        return c
+    done = types.SimpleNamespace(code="Ok")
+    koala, hook = FakeObject(11, True), FakeObject(12, True)
+    koala.model_object = lambda: types.SimpleNamespace(name="Koala.stl", instances=lambda: [])
+    hook.model_object = lambda: types.SimpleNamespace(name="Hook 30x20.stl", instances=lambda: [])
+    c = fresh_job()
+    c.execute(slice_ctx(koala, [koala]))
+    c.on_lifecycle_event("SlicingJobComplete", done)
+    check(len(shown) == 1 and shown[0][0] == "Warning" and "Koala.stl" in shown[0][1] and "Enable support is on" in shown[0][1]
+          and "apply_to" in shown[0][1], "supports on, nothing waved: a warning that names the object and the two fixes")
+    c = fresh_job()
+    c.execute(slice_ctx(koala, [koala, hook])); c.execute(slice_ctx(hook, [koala, hook]))
+    c.on_lifecycle_event("SlicingJobComplete", done)
+    check(len(shown) == 1 and "2 objects" in shown[0][1] and "Koala.stl" in shown[0][1] and "Hook 30x20.stl" in shown[0][1],
+          "two objects left alone are named in one notification")
+    c = fresh_job()
+    c.execute(slice_ctx(koala, [koala]))
+    w._STATE.update(ps.synthetic_captures()); w._SLICE_DIRTY = True; w._AUTO_OPEN = True
+    w._note("Wave Overhangs, part: waves on 1 layer(s), under a minute", "slice")
+    c.on_lifecycle_event("SlicingJobComplete", done)
+    check(len(shown) == 2 and shown[0][0] == "Important" and "Koala.stl" in shown[0][1] and "wave layer" in shown[1][1]
+          and links[-1][0] == "Show waves", "some objects waved, one left alone: a quiet note, and the Show waves notification as before")
+    shown.clear(); links.clear()
+    c.on_lifecycle_event("SliceStarted", done)                      # a cached re-slice: the slicing step does not run
+    c.on_lifecycle_event("SlicingJobComplete", done)
+    check(not shown and w._JOB["last_skipped"] == ["Koala.stl"], "a cached slice does not repeat it, and remembers what was skipped")
+    c = fresh_job()
+    c.execute(slice_ctx(koala, [koala]))
+    c.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Warn"))
+    check(not shown, "a cancelled job says nothing")
+    c = fresh_job()
+    c.execute(slice_ctx(hook, [hook]))
+    c.on_lifecycle_event("SlicingJobComplete", done)
+    text = w._empty_text()
+    check(text and "Hook 30x20.stl" in text and text.startswith("No waves to show"), "the empty preview says why: %s" % text)
+    tab = w.WavePreviewTab(); sent = []; tab.post_message = sent.append
+    tab.on_message(json.dumps({"command": "preview_ready"}))
+    check(sent[0]["command"] == "empty" and "Hook 30x20.stl" in (sent[0]["text"] or ""), "the Wave Preview tab gets that text")
+    w.ShowWavePreview().execute()
+    check(messages and "Hook 30x20.stl" in messages[-1][1], "so does the Show Wave Preview action's message")
+    c = fresh_job()
+    check(w._empty_text() is None, "with nothing skipped the page keeps its default hint")
 
     # log
     with open(LOG, encoding="utf-8") as f:

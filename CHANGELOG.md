@@ -3,6 +3,12 @@
 Versions are those in the plugin's header (`# version = ...`) and in the first line of the report in
 the exported G-code (`; WAVE_OVERHANGS version ...`).
 
+## 0.12.1 - 2026-11
+- An object left alone because **Enable support** is on is now reported on screen: a notification names
+  it and says how to fix it (a warning that stays when nothing got waves), and the empty preview says
+  why. Before, it was only written to the log, so a model sliced with supports on showed no waves, no
+  notification and no preview, and the plugin looked broken.
+
 ## 0.12.0 - 2026-11
 - The preview side panel now opens by itself after slicing (`open_panel` is on by default; turn it
   off in the settings).

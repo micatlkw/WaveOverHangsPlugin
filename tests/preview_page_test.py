@@ -48,6 +48,7 @@ def load_data(path):
 
 STUB = """<script>
 window.__DATA__ = %s;
+window.__EMPTY_TEXT__ = %s;
 (function () {
   var handlers = [];
   window.orca = {
@@ -55,7 +56,7 @@ window.__DATA__ = %s;
     postMessage: function (m) {
       if (m && m.command === "preview_ready")
         setTimeout(function () {
-          var d = window.__DATA__ || { command: "empty" }; if (window.__DATA__) d.command = "preview";
+          var d = window.__DATA__ || { command: "empty", text: window.__EMPTY_TEXT__ }; if (window.__DATA__) d.command = "preview";
           handlers.forEach(function (h) { h(d); });
         }, 20);
     }
@@ -65,12 +66,12 @@ window.__DATA__ = %s;
 """
 
 
-def build_html(data, title, out_dir, tab=False, extra=""):
+def build_html(data, title, out_dir, tab=False, extra="", empty_text=None):
     data = dict(data, title=title) if data is not None else None
     html = w.PREVIEW_PAGE
     if tab:     # what WavePreviewTab.get_ui() adds
         html = html.replace('<div id="bar">', '<script>window.__WAVE_TAB__ = true;</script>\n<div id="bar">', 1)
-    html = html.replace("<div id=\"bar\">", STUB % json.dumps(data) + "<div id=\"bar\">", 1) + extra
+    html = html.replace("<div id=\"bar\">", STUB % (json.dumps(data), json.dumps(empty_text)) + "<div id=\"bar\">", 1) + extra
     path = os.path.join(out_dir, "page.html")
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -122,6 +123,10 @@ def main():
     empty = chrome(build_html(None, "", out_dir), "", ["--dump-dom", "--virtual-time-budget=4000"]).stdout
     check("No waves to show yet" in empty and 'id="status" class="bad"' not in empty,
           "with no data the page says there are no waves yet")
+    why = chrome(build_html(None, "", out_dir, empty_text="No waves to show: left Koala.stl alone."), "",
+                 ["--dump-dom", "--virtual-time-budget=4000"]).stdout
+    check("No waves to show: left Koala.stl alone." in why and "select Wave Overhangs" not in why.lower(),
+          "and, when told why, the page shows the reason instead")
     import re
 
     shown_js = ('<script>setTimeout(function () { document.documentElement.setAttribute("data-side", '
