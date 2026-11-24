@@ -6,7 +6,7 @@
 # name = "Wave Overhangs"
 # description = "Prints overhangs as concentric waves grown from the supported edge (port of the OrcaSlicer-WaveOverhangs fork as a slicing-pipeline plugin)."
 # author = "WaveOverHangsPlugin"
-# version = "0.8.2"
+# version = "0.9.0"
 # type = "slicing-pipeline"
 # ///
 """Wave Overhangs -- slicing-pipeline plugin.
@@ -2160,7 +2160,13 @@ PREVIEW_PAGE = r"""
 
   // ---- start --------------------------------------------------------------------------------
   try { if (initGL()) {
-    orca.onMessage(function (msg) { if (msg && msg.command === "preview") { try { load(msg); } catch (e) { fail(e.message || e); } } });
+    orca.onMessage(function (msg) {
+      if (!msg) return;
+      if (msg.command === "preview") { try { load(msg); } catch (e) { fail(e.message || e); } }
+      else if (msg.command === "empty" && !data)
+        statusEl.textContent = "No waves to show yet. Select Wave Overhangs as the Slicing Pipeline Plugin, " +
+                               "then slice a plate that has overhangs.";
+    });
     orca.postMessage({ command: "preview_ready" });
   } } catch (e) { fail(e.message || e); }
 })();
@@ -2420,7 +2426,7 @@ def _inject_all(lines, captures, cfg, report, notes):
         notes.append(("Wave Overhangs: waves added, %s." % _minutes_text(minutes), "info"))
 
 
-_VERSION = "0.8.2"
+_VERSION = "0.9.0"
 
 
 # ============================================================================
@@ -2428,6 +2434,16 @@ _VERSION = "0.8.2"
 # ============================================================================
 
 _PANEL = None        # the open preview panel (UI thread only)
+_PAGE = None         # the Wave Preview tab's capability, once its page has been built
+
+
+def _push_to_tab():
+    """Send the latest preview data to the tab. Does nothing until the tab has been opened once
+    (the page asks for its data when it loads)."""
+    page = _PAGE
+    payload = _preview_payload()
+    if page is not None and payload is not None:
+        page.post_message(payload)
 
 
 def _preview_payload():
@@ -2727,6 +2743,7 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
                 pv["fresh"] = False
                 if self.panel is not None and self.panel.is_open():
                     self.show_preview()
+                _push_to_tab()
             _write_log({"event": "slicing_complete", "completed": completed, "notes": len(notes),
                         "fresh": bool(fresh), "texts": [t for t, _ in notes][:4]})
             if any(level == "slice" for _, level in notes):
@@ -2749,6 +2766,28 @@ class WaveOverhangs(orca.slicing.SlicingPipelineCapabilityBase):
                         "text": notification_text(notes), "link": bool(fresh)})
         except Exception as e:  # never break Orca over a notification
             _write_log({"event": "notification", "error": "%s: %s" % (type(e).__name__, e)})
+
+
+class WavePreviewTab(orca.pages.PagesPluginCapabilityBase):
+    """A tab next to Prepare and Preview with the wave preview: always there, nothing to reopen, the
+    whole window to draw in. It shows the latest slice or export and is updated after each one."""
+
+    def get_name(self):
+        return "Wave Preview"
+
+    def get_ui(self):
+        global _PAGE
+        _PAGE = self
+        return PREVIEW_PAGE
+
+    def on_message(self, message):
+        try:
+            data = json.loads(message) if isinstance(message, str) else message
+        except ValueError:
+            return
+        if isinstance(data, dict) and data.get("command") == "preview_ready":
+            payload = _preview_payload()
+            self.post_message(payload if payload is not None else {"command": "empty"})
 
 
 class ShowWavePreview(orca.script.ScriptPluginCapabilityBase):
@@ -2779,3 +2818,4 @@ class WaveOverhangsPackage(orca.base):
     def register_capabilities(self):
         orca.register_capability(WaveOverhangs)
         orca.register_capability(ShowWavePreview)
+        orca.register_capability(WavePreviewTab)

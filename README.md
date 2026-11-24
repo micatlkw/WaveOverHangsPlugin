@@ -27,10 +27,18 @@ exported file in a second OrcaSlicer.
 
 ### The wave preview panel
 
-When slicing finishes, the notification has a **Show waves** link, and it has one again after an
-export. It opens a panel beside the 3D view. The notification stays for 5 minutes (close it with its
-x); to open the panel again later, or after closing it, open the **Plugins** dialog, expand
-**Wave Overhangs** and click the ▶ next to **Show Wave Preview**. It shows the latest slice or export. The panel itself:
+The preview is in two places, with the same content:
+
+- **The Wave Preview tab**, next to Prepare and Preview. It is always there while the plugin is
+  enabled, uses the whole window, and updates itself after every slice and export. (If you have
+  several plugin tabs, the extra ones are behind the ▾ menu at the end of the tab strip.)
+- **A side panel** beside the 3D view, so you can compare with OrcaSlicer's own preview. The
+  notification after slicing has a **Show waves** link and stays for 5 minutes (close it with its
+  x); to open the side panel again later, open the **Plugins** dialog, expand **Wave Overhangs** and
+  click the ▶ next to **Show Wave Preview**.
+
+Both show the latest slice or export. The tab says "No waves to show yet" until a slice has
+produced some. The view itself:
 
 - **Right after slicing,** the panel draws the waves and kept walls the plugin worked out, with
   the outline of every layer in grey. It places each object by the centre of its bounding box on

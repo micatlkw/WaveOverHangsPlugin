@@ -234,9 +234,20 @@ tab (the tab was only an idea in the reply, not built). 0.8.2: the notification 
 `HintNotificationLevel` (stays 300 s); the Plugins dialog has a Run button per capability, so
 "Show Wave Preview" is there; README says how to find it.
 
-## 17. Next
+## 17. The Wave Preview tab — done in code, not yet run in OrcaSlicer
 
-Check 0.8.2 in OrcaSlicer (the notification stays; the Plugins dialog > Wave Overhangs > Show Wave
-Preview opens the panel). If the Plugins-dialog route is too awkward, build the permanent tab (a
-`PagesPluginCapability`). Then push and tag v0.8.2. Also: add the "second window" sentence to the preview
-proposal; README note for macOS.
+The user found the Plugins-dialog button and asked for a tab. 0.9.0 adds `WavePreviewTab` (a Pages
+capability): a "Wave Preview" tab next to Prepare/Preview with the same page as the side panel,
+refreshed after every slice/export. `tests/notifications_test.py` covers its messages, updates and the
+registration of the three capabilities; `tests/preview_page_test.py` the empty state.
+
+To check: reinstall 0.9.0; a "Wave Preview" tab should appear next to Prepare/Preview (maybe only after
+the plugin is toggled off and on, or after restarting OrcaSlicer, as `PluginPages` creates pages when a
+capability registers); open it (before any slice it says there are no waves yet); slice, and it should
+fill in; export, and it should refresh. Unknowns: whether the tab appears without a restart, the tab
+icon (none), the tab's size/behaviour of WebGL when hidden then shown.
+
+## 18. Next
+
+Check 0.9.0 in OrcaSlicer, then push and tag (v0.8.x and v0.9.0 are not tagged). Also: add the "second
+window" sentence to the preview proposal; README note for macOS.

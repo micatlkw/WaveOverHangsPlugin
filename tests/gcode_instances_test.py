@@ -26,6 +26,7 @@ orca.slicing = sl
 orca.ExecutionResult = object
 orca.base = object
 orca.script = types.SimpleNamespace(ScriptPluginCapabilityBase=object)
+orca.pages = types.SimpleNamespace(PagesPluginCapabilityBase=object)
 orca.plugin = lambda c: c
 orca.register_capability = lambda *a: None
 sys.modules["orca"] = orca

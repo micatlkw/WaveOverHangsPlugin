@@ -54,7 +54,7 @@ window.__DATA__ = %s;
     postMessage: function (m) {
       if (m && m.command === "preview_ready")
         setTimeout(function () {
-          var d = window.__DATA__; d.command = "preview";
+          var d = window.__DATA__ || { command: "empty" }; if (window.__DATA__) d.command = "preview";
           handlers.forEach(function (h) { h(d); });
         }, 20);
     }
@@ -65,7 +65,7 @@ window.__DATA__ = %s;
 
 
 def build_html(data, title, out_dir):
-    data = dict(data, title=title)
+    data = dict(data, title=title) if data is not None else None
     html = w.PREVIEW_PAGE.replace("<div id=\"bar\">", STUB % json.dumps(data) + "<div id=\"bar\">", 1)
     path = os.path.join(out_dir, "page.html")
     with open(path, "w", encoding="utf-8") as f:
@@ -112,6 +112,10 @@ def main():
     check(waved, "%s: %d layers, waves on %d of them" % (title, len(layers), len(waved)))
     path = build_html(data, title, out_dir)
 
+    empty = chrome(build_html(None, "", out_dir), "", ["--dump-dom", "--virtual-time-budget=4000"]).stdout
+    check("No waves to show yet" in empty and 'id="status" class="bad"' not in empty,
+          "with no data the page says there are no waves yet")
+    path = build_html(data, title, out_dir)
     dom = chrome(path, "", ["--dump-dom", "--virtual-time-budget=4000"]).stdout
     check('id="status" class="bad"' not in dom, "page loads without a script error")
     check(("%d layers" % len(layers)) in dom, "status line reports %d layers" % len(layers))

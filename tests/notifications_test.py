@@ -280,6 +280,46 @@ def main():
     capability({}).on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
     check(w._PREVIEW is None and not w._SLICE_DIRTY, "no captured waves: no preview")
 
+    # the Wave Preview tab (a page capability: a tab next to Prepare and Preview)
+    tab = w.WavePreviewTab()
+    tab_posted = []
+    tab.post_message = tab_posted.append
+    w._PAGE = None
+    check(tab.get_name() == "Wave Preview" and tab.get_ui() == w.PREVIEW_PAGE and w._PAGE is tab,
+          "the tab is named Wave Preview, serves the preview page and remembers its capability")
+    w._PREVIEW = None
+    tab.on_message(json.dumps({"command": "preview_ready"}))
+    check(tab_posted[-1] == {"command": "empty"}, "with nothing to show the page is told so")
+    w._PREVIEW = {"data": w.build_slice_preview(ps.synthetic_captures()), "fresh": False, "source": "slice",
+                  "title": "from the slice"}
+    tab.on_message(json.dumps({"command": "preview_ready"}))
+    check(tab_posted[-1]["command"] == "preview" and tab_posted[-1]["title"] == "from the slice"
+          and abs(tab_posted[-1]["stats"]["wave_mm"] - 26.0) < 0.1, "the page gets the data when it asks")
+    n = len(tab_posted)
+    tab.on_message("this is not json")
+    tab.on_message(json.dumps({"command": "something else"}))
+    check(len(tab_posted) == n, "other and malformed messages are ignored")
+    w._PANEL = None
+    tab_posted.clear(); shown.clear(); links.clear()
+    cap = capability({})
+    cap._store_preview(gctx, {"preview": 1}, exported, True, True)
+    w._note("Wave Overhangs: waves added, under a minute.", "info")
+    cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
+    check(tab_posted and tab_posted[-1]["title"] == "plate.gcode",
+          "after an export the tab is updated, even with the side panel closed")
+    w._PAGE = None
+    cap._store_preview(gctx, {"preview": 1}, exported, True, True)
+    w._note("Wave Overhangs: waves added, under a minute.", "info")
+    cap.on_lifecycle_event("SlicingJobComplete", types.SimpleNamespace(code="Ok"))
+    check(len(links) >= 2, "a tab that was never opened is skipped without error")
+    registered = []
+    old_register = w.orca.register_capability
+    w.orca.register_capability = registered.append
+    w.WaveOverhangsPackage().register_capabilities()
+    w.orca.register_capability = old_register
+    check([c.__name__ for c in registered] == ["WaveOverhangs", "ShowWavePreview", "WavePreviewTab"],
+          "the plugin registers the pipeline plugin, the Show Wave Preview action and the tab")
+
     # log
     with open(LOG, encoding="utf-8") as f:
         entries = [json.loads(line) for line in f]
